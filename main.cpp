@@ -16,6 +16,7 @@
 #include <memory>
 #include <random>
 #include <signal.h>
+#include <sstream>
 #include <thread>
 #include <unordered_set>
 #include "event2/buffer.h"
