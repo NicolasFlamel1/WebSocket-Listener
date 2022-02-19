@@ -43,6 +43,9 @@ class Common final {
 		// Is numeric
 		static bool isNumeric(const string &text);
 		
+		// Microseconds in a millisecond
+		static const int MICROSECONDS_IN_A_MILLISECOND;
+		
 		// Milliseconds in a second
 		static const int MILLISECONDS_IN_A_SECOND;
 

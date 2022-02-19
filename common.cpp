@@ -9,6 +9,9 @@ using namespace std;
 
 // Constants
 
+// Microseconds in a millisecond
+const int Common::MICROSECONDS_IN_A_MILLISECOND = 1000;
+
 // Milliseconds in a second
 const int Common::MILLISECONDS_IN_A_SECOND = 1000;
 

@@ -3,6 +3,10 @@
 
 	// Set system version
 	#define _WIN32_WINNT _WIN32_WINNT_VISTA
+	
+	// Use Unicode
+	#define UNICODE
+	#define _UNICODE
 #endif
 
 // Header files
@@ -21,12 +25,13 @@
 #include <unordered_set>
 #include "event2/buffer.h"
 #include "common.h"
-#include "event2/bufferevent.h"
+#include "event2/bufferevent_ssl.h"
 #include "event2/event.h"
 #include "event2/event_struct.h"
 #include "event2/http.h"
 #include "event2/thread.h"
 #include "json.h"
+#include "openssl/ssl.h"
 
 // Extern C
 extern "C" {
@@ -64,17 +69,26 @@ using namespace std;
 
 // Constants
 
+// Default listen address
+static const char *DEFAULT_LISTEN_ADDRESS = "localhost";
+
+// Default listen port
+static const uint16_t DEFAULT_LISTEN_PORT = 9061;
+
 // WebSocket magic key value
 static const char *WEBSOCKET_MAGIC_KEY_VALUE = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 // HTTP port
 static const uint16_t HTTP_PORT = 80;
 
+// HTTPS port
+static const uint16_t HTTPS_PORT = 443;
+
 // HTTP switching protocols
 static const int HTTP_SWITCHING_PROTOCOL = 101;
 
 // Check Tor connected interval microseconds
-static const decltype(timeval::tv_usec) CHECK_TOR_CONNECTED_INTERVAL_MICROSECONDS = 100 * 1000;
+static const decltype(timeval::tv_usec) CHECK_TOR_CONNECTED_INTERVAL_MICROSECONDS = 100 * Common::MICROSECONDS_IN_A_MILLISECOND;
 
 // WebSocket opcode byte offset
 static const size_t WEBSOCKET_OPCODE_BYTE_OFFSET = 0;
@@ -162,6 +176,9 @@ static const size_t MAXIMUM_HEADERS_SIZE = 1 * Common::KILOBYTE_IN_A_MEGABYTE * 
 
 // Maximum body size
 static const size_t MAXIMUM_BODY_SIZE = 10 * Common::KILOBYTE_IN_A_MEGABYTE * Common::BYTES_IN_A_KILOBYTE;
+
+// No socket
+static const evutil_socket_t NO_SOCKET = -1;
 
 // WebSocket Opcode
 enum class WebSocketOpcode {
@@ -375,10 +392,16 @@ int main(int argc, char *argv[]) {
 	cout << TOSTRING(PROGRAM_NAME) << " V" << TOSTRING(PROGRAM_VERSION) << endl;
 	
 	// Initialize listen address
-	string listenAddress = "localhost";
+	string listenAddress = DEFAULT_LISTEN_ADDRESS;
 	
 	// Initialize listen port
-	uint16_t listenPort = 9061;
+	uint16_t listenPort = DEFAULT_LISTEN_PORT;
+	
+	// Initialize certificate
+	const char *certificate = nullptr;
+	
+	// Initialize key
+	const char *key = nullptr;
 	
 	// Set options
 	const option options[] = {
@@ -392,6 +415,12 @@ int main(int argc, char *argv[]) {
 		// Port
 		{"port", required_argument, nullptr, 'p'},
 		
+		// Certificate
+		{"certificate", required_argument, nullptr, 'c'},
+		
+		// Key
+		{"key", required_argument, nullptr, 'k'},
+		
 		// Help
 		{"help", no_argument, nullptr, 'h'},
 		
@@ -400,7 +429,7 @@ int main(int argc, char *argv[]) {
 	};
 	
 	// Go through all options
-	for(int option = getopt_long(argc, argv, "va:p:h", options, nullptr); option != -1; option = getopt_long(argc, argv, "va:p:h", options, nullptr)) {
+	for(int option = getopt_long(argc, argv, "va:p:c:k:h", options, nullptr); option != -1; option = getopt_long(argc, argv, "va:p:c:k:h", options, nullptr)) {
 	
 		// Check option
 		switch(option) {
@@ -417,6 +446,24 @@ int main(int argc, char *argv[]) {
 				// Set listen address
 				listenAddress = optarg;
 				
+				// Break
+				break;
+			
+			// Certificate
+			case 'c':
+			
+				// Set certificate
+				certificate = optarg;
+			
+				// Break
+				break;
+			
+			// Key
+			case 'k':
+			
+				// Set key
+				key = optarg;
+			
 				// Break
 				break;
 			
@@ -477,12 +524,37 @@ int main(int argc, char *argv[]) {
 				cout << "\t-v, --version\t\tDisplays version information" << endl;
 				cout << "\t-a, --address\t\tSets address to listen on" << endl;
 				cout << "\t-p, --port\t\tSets port to listen on" << endl;
+				cout << "\t-c, --certificate\tSets the TLS certificate file" << endl;
+				cout << "\t-k, --key\t\tSets the TLS private key file" << endl;
 				cout << "\t-h, --help\t\tDisplays help information" << endl;
 			
 				// Return failure
 				return EXIT_FAILURE;
 		}
 	}
+	
+	// Check if certificate is provided without a key or a key is provided without a certificate
+	if((certificate && !key) || (!certificate && key)) {
+	
+		// Display message
+		cout << ((certificate && !key) ? "No key provided for the certificate" : "No certificate provided for the key") << endl;
+		
+		// Display message
+		cout << endl << "Usage:" << endl << "\t\"" << argv[0] << "\" [options]" << endl << endl;
+		cout << "Options:" << endl;
+		cout << "\t-v, --version\t\tDisplays version information" << endl;
+		cout << "\t-a, --address\t\tSets address to listen on" << endl;
+		cout << "\t-p, --port\t\tSets port to listen on" << endl;
+		cout << "\t-c, --certificate\tSets the TLS certificate file" << endl;
+		cout << "\t-k, --key\t\tSets the TLS private key file" << endl;
+		cout << "\t-h, --help\t\tDisplays help information" << endl;
+	
+		// Return failure
+		return EXIT_FAILURE;
+	}
+	
+	// Set using TLS server to if a certificate and key are provided
+	const bool usingTlsServer = certificate && key;
 
 	// Check if not Windows
 	#ifndef _WIN32
@@ -550,6 +622,42 @@ int main(int argc, char *argv[]) {
 		}
 	#endif
 	
+	// Check if creating TLS method failed
+	const SSL_METHOD *tlsMethod = TLS_server_method();
+	if(!tlsMethod) {
+	
+		// Display message
+		cout << "Creating TLS method failed" << endl;
+	
+		// Return failure
+		return EXIT_FAILURE;
+	}
+	
+	// Check if creating TLS context failed
+	unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> tlsContext(SSL_CTX_new(tlsMethod), SSL_CTX_free);
+	if(!tlsContext) {
+	
+		// Display message
+		cout << "Creating TLS context failed" << endl;
+	
+		// Return failure
+		return EXIT_FAILURE;
+	}
+	
+	// Check if using TLS server
+	if(usingTlsServer) {
+	
+		// Check if setting the TLS context's certificate and key failed
+		if(SSL_CTX_use_certificate_chain_file(tlsContext.get(), certificate) != 1 || SSL_CTX_use_PrivateKey_file(tlsContext.get(), key, SSL_FILETYPE_PEM) != 1 || SSL_CTX_check_private_key(tlsContext.get()) != 1) {
+		
+			// Display message
+			cout << "Setting the TLS context's certificate and key failed" << endl;
+		
+			// Return failure
+			return EXIT_FAILURE;
+		}
+	}
+	
 	// Check if creating event base failed
 	shared_ptr<event_base> eventBase(event_base_new(), event_base_free);
 	if(!eventBase) {
@@ -575,6 +683,46 @@ int main(int argc, char *argv[]) {
 	// Set HTTP server to only allow GET and OPTIONS requests
 	evhttp_set_allowed_methods(httpServer.get(), EVHTTP_REQ_GET | EVHTTP_REQ_OPTIONS);
 	
+	// Check if using TLS server
+	if(usingTlsServer) {
+	
+		// Set HTTP server buffer event create callback
+		evhttp_set_bevcb(httpServer.get(), ([](event_base *eventBase, void *argument) -> bufferevent * {
+		
+			// Get TLS context from argument
+			SSL_CTX *tlsContext = reinterpret_cast<SSL_CTX *>(argument);
+		
+			// Check if creating TLS connection from the TLS context failed
+			unique_ptr<SSL, decltype(&SSL_free)> tlsConnection(SSL_new(tlsContext), SSL_free);
+			if(!tlsConnection) {
+			
+				// Return null
+				return nullptr;
+			}
+			
+			// Check if creating TLS buffer failed
+			unique_ptr<bufferevent, decltype(&bufferevent_free)> tlsBuffer(bufferevent_openssl_socket_new(eventBase, NO_SOCKET, tlsConnection.get(), BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE | BEV_OPT_DEFER_CALLBACKS), bufferevent_free);
+			if(!tlsBuffer) {
+			
+				// Return null
+				return nullptr;
+			}
+			
+			// Release TLS connection
+			tlsConnection.release();
+			
+			// Get buffer event
+			bufferevent *bufferEvent = tlsBuffer.get();
+			
+			// Release TLS buffer
+			tlsBuffer.release();
+			
+			// Return buffer event
+			return bufferEvent;
+			
+		}), tlsContext.get());
+	}
+	
 	// Initialize Tor hidden service address
 	string torHiddenServiceAddress;
 	
@@ -585,7 +733,7 @@ int main(int argc, char *argv[]) {
 	event pingEvent;
 		
 	// Check if setting ping callback failed
-	if(event_assign(&pingEvent, eventBase.get(), -1, EV_PERSIST, ([](evutil_socket_t signal, short events, void *argument) {
+	if(event_assign(&pingEvent, eventBase.get(), NO_SOCKET, EV_PERSIST, ([](evutil_socket_t signal, short events, void *argument) {
 	
 		// Get clients from argument
 		unordered_map<evhttp_connection *, Client> *clients = reinterpret_cast<unordered_map<evhttp_connection *, Client> *>(argument);
@@ -675,22 +823,43 @@ int main(int argc, char *argv[]) {
 	unordered_map<string, unordered_set<string>> urls;
 	
 	// Initialize HTTP server request callback argument
-	tuple<const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> httpServerRequestCallbackArgument(&torHiddenServiceAddress, &clients, &urls);
+	tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> httpServerRequestCallbackArgument(&usingTlsServer, &torHiddenServiceAddress, &clients, &urls);
 	
 	// Set HTTP server WebSocket request callback
 	evhttp_set_cb(httpServer.get(), "/", ([](evhttp_request *request, void *argument) {
 	
 		// Get HTTP server request callback argument from argument
-		tuple<const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *httpServerRequestCallbackArgument = reinterpret_cast<tuple<const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *>(argument);
+		tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *httpServerRequestCallbackArgument = reinterpret_cast<tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *>(argument);
+		
+		// Get using TLS server from HTTP server request callback argument
+		const bool *usingTlsServer = get<0>(*httpServerRequestCallbackArgument);
 		
 		// Get Tor hidden service address from HTTP server request callback argument
-		const string *torHiddenServiceAddress = get<0>(*httpServerRequestCallbackArgument);
+		const string *torHiddenServiceAddress = get<1>(*httpServerRequestCallbackArgument);
 		
 		// Get clients from HTTP server request callback argument
-		unordered_map<evhttp_connection *, Client> *clients = get<1>(*httpServerRequestCallbackArgument);
+		unordered_map<evhttp_connection *, Client> *clients = get<2>(*httpServerRequestCallbackArgument);
 		
 		// Get URLs from HTTP server request callback argument
-		unordered_map<string, unordered_set<string>> *urls = get<2>(*httpServerRequestCallbackArgument);
+		unordered_map<string, unordered_set<string>> *urls = get<3>(*httpServerRequestCallbackArgument);
+		
+		// Check if using TLS server
+		if(*usingTlsServer) {
+		
+			// Set request's connection close callback
+			evhttp_connection_set_closecb(evhttp_request_get_connection(request), ([](evhttp_connection *connection, void *argument) {
+			
+				// Check if request's TLS connection exists
+				SSL *requestTlsConnection = bufferevent_openssl_get_ssl(evhttp_connection_get_bufferevent(connection));
+				
+				if(requestTlsConnection) {
+				
+					// Shutdown request's TLS connection
+					SSL_shutdown(requestTlsConnection);
+				}
+				
+			}), nullptr);
+		}
 		
 		// Check if setting request's CORS headers failed
 		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*")) {
@@ -2126,6 +2295,30 @@ int main(int argc, char *argv[]) {
 	// Set HTTP server request callback
 	evhttp_set_gencb(httpServer.get(), ([](evhttp_request *request, void *argument) {
 	
+		// Get HTTP server request callback argument from argument
+		tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *httpServerRequestCallbackArgument = reinterpret_cast<tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *>(argument);
+		
+		// Get using TLS server from HTTP server request callback argument
+		const bool *usingTlsServer = get<0>(*httpServerRequestCallbackArgument);
+		
+		// Check if using TLS server
+		if(*usingTlsServer) {
+		
+			// Set request's connection close callback
+			evhttp_connection_set_closecb(evhttp_request_get_connection(request), ([](evhttp_connection *connection, void *argument) {
+			
+				// Check if request's TLS connection exists
+				SSL *requestTlsConnection = bufferevent_openssl_get_ssl(evhttp_connection_get_bufferevent(connection));
+				
+				if(requestTlsConnection) {
+				
+					// Shutdown request's TLS connection
+					SSL_shutdown(requestTlsConnection);
+				}
+				
+			}), nullptr);
+		}
+	
 		// Check if setting request's CORS headers failed
 		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*")) {
 		
@@ -2722,13 +2915,13 @@ int main(int argc, char *argv[]) {
 	bool torConnected = false;
 	
 	// Initialize Tor connection callbacks argument
-	tuple<const string *, const uint16_t *, evhttp *, string *, evhttp *, bool *> torConnectionCallbacksArgument(&listenAddress, &listenPort, httpServer.get(), &torHiddenServiceAddress, torServer.get(), &torConnected);
+	tuple<const string *, const uint16_t *, const bool *, evhttp *, string *, evhttp *, bool *> torConnectionCallbacksArgument(&listenAddress, &listenPort, &usingTlsServer, httpServer.get(), &torHiddenServiceAddress, torServer.get(), &torConnected);
 	
 	// Set Tor connection callbacks
 	bufferevent_setcb(torConnection.get(), ([](bufferevent *torConnection, void *argument) {
 	
 		// Get Tor connection callbacks argument from argument
-		tuple<const string *, const uint16_t *, evhttp *, string *, evhttp *, bool *> *torConnectionCallbacksArgument = reinterpret_cast<tuple<const string *, const uint16_t *, evhttp *, string *, evhttp *, bool *> *>(argument);
+		tuple<const string *, const uint16_t *, const bool *, evhttp *, string *, evhttp *, bool *> *torConnectionCallbacksArgument = reinterpret_cast<tuple<const string *, const uint16_t *, const bool *, evhttp *, string *, evhttp *, bool *> *>(argument);
 		
 		// Get listen address from Tor connection callbacks arguments
 		const string *listenAddress = get<0>(*torConnectionCallbacksArgument);
@@ -2736,17 +2929,20 @@ int main(int argc, char *argv[]) {
 		// Get listen port from Tor connection callbacks arguments
 		const uint16_t *listenPort = get<1>(*torConnectionCallbacksArgument);
 		
+		// Get using TLS server from Tor connection callbacks arguments
+		const bool *usingTlsServer = get<2>(*torConnectionCallbacksArgument);
+		
 		// Get HTTP server from Tor connection callbacks arguments
-		evhttp *httpServer = get<2>(*torConnectionCallbacksArgument);
+		evhttp *httpServer = get<3>(*torConnectionCallbacksArgument);
 		
 		// Get Tor hidden service address from Tor connection callbacks argument
-		string *torHiddenServiceAddress = get<3>(*torConnectionCallbacksArgument);
+		string *torHiddenServiceAddress = get<4>(*torConnectionCallbacksArgument);
 		
 		// Get Tor server from Tor connection callbacks arguments
-		evhttp *torServer = get<4>(*torConnectionCallbacksArgument);
+		evhttp *torServer = get<5>(*torConnectionCallbacksArgument);
 	
 		// Get Tor connected from Tor connection callbacks argument
-		bool *torConnected = get<5>(*torConnectionCallbacksArgument);
+		bool *torConnected = get<6>(*torConnectionCallbacksArgument);
 		
 		// Check if getting input from the Tor connection failed
 		evbuffer *input = bufferevent_get_input(torConnection);
@@ -3025,11 +3221,11 @@ int main(int argc, char *argv[]) {
 							// Otherwise
 							else {
 											
-								// Check if binding HTTP server to listen address and listen port failed
+								// Check if binding server to listen address and listen port failed
 								if(evhttp_bind_socket(httpServer, listenAddress->c_str(), *listenPort)) {
 								
 									// Display message
-									cout << "Binding HTTP server to " << *listenAddress << ':' << to_string(*listenPort) << " failed" << endl;
+									cout << "Binding server to " << *listenAddress << ':' << to_string(*listenPort) << " failed" << endl;
 									
 									// Remove Tor connection callbacks
 									bufferevent_setcb(torConnection, nullptr, nullptr, nullptr, nullptr);
@@ -3044,19 +3240,22 @@ int main(int argc, char *argv[]) {
 									// Set Tor hidden service address to address
 									*torHiddenServiceAddress = address;
 									
+									// Set display port to if the listen port doesn't match the default server port
+									const bool displayPort = (!*usingTlsServer && *listenPort != HTTP_PORT) || (*usingTlsServer && *listenPort != HTTPS_PORT);
+									
 									// Check if listen address is an IPv6 address
 									char temp[sizeof(in6_addr)];
 									if(inet_pton(AF_INET6, listenAddress->c_str(), temp) == 1) {
 									
 										// Display message
-										cout << "Listening at ws://[" << *listenAddress << ']' << ((*listenPort != HTTP_PORT) ? ':' + to_string(*listenPort) : "") << endl;
+										cout << "Listening at " << (*usingTlsServer ? "wss" : "ws") << "://[" << *listenAddress << ']' << (displayPort ? ':' + to_string(*listenPort) : "") << endl;
 									}
 									
 									// Otherwise
 									else {
 									
 										// Display message
-										cout << "Listening at ws://" << *listenAddress << ((*listenPort != HTTP_PORT) ? ':' + to_string(*listenPort) : "") << endl;
+										cout << "Listening at " << (*usingTlsServer ? "wss" : "ws") << "://" << *listenAddress << (displayPort ? ':' + to_string(*listenPort) : "") << endl;
 									}
 								}
 							}
