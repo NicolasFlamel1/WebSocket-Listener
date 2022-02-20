@@ -1482,6 +1482,9 @@ int main(int argc, char *argv[]) {
 																// Remove frame's length from length
 																length -= maskOffset + WEBSOCKET_MASK_LENGTH + realLength;
 																
+																// Remove frame from data
+																memmove(data, &data[maskOffset + WEBSOCKET_MASK_LENGTH + realLength], length);
+																
 																// Check is the final frame
 																if(isFinalFrame) {
 																
@@ -1494,7 +1497,7 @@ int main(int argc, char *argv[]) {
 																			{
 																				// Initialize response
 																				string response;
-																		
+																				
 																				// Check if current message is JSON
 																				Json jsonMessage;
 																				if(jsonMessage.decode(*message) && jsonMessage.getType() == Json::Type::OBJECT) {
@@ -1508,7 +1511,7 @@ int main(int argc, char *argv[]) {
 																					
 																							// Get index
 																							const Json::Number &index = jsonMessage.getObjectValue().at("Index")->getNumberValue();
-																						
+																							
 																							// Check if message contains a valid request
 																							if(jsonMessage.getObjectValue().count("Request") && jsonMessage.getObjectValue().at("Request")->getType() == Json::Type::STRING) {
 																					
