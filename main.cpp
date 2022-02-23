@@ -2584,19 +2584,12 @@ int main(int argc, char *argv[]) {
 								// Get input's length
 								const size_t length = evbuffer_get_length(input);
 								
-								// Check if input's length is invaid
-								if(!length) {
-								
-									// Reply with bad request error to request
-									evhttp_send_reply(request, HTTP_BADREQUEST, nullptr, nullptr);
-									
-									// Return
-									return;
-								}
-								
 								// Check if getting data from input failed
 								vector<uint8_t> buffer(length);
 								if(evbuffer_copyout(input, buffer.data(), length) == -1) {
+								
+									// Remove data from input
+									evbuffer_drain(input, length);
 								
 									// Reply with internal server error to request
 									evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -2605,8 +2598,32 @@ int main(int argc, char *argv[]) {
 									return;
 								}
 								
-								// Set data to buffer
-								data = Json::base64Encode(buffer);
+								// Check if removing data from input failed
+								if(evbuffer_drain(input, length)) {
+								
+									// Reply with internal server error to request
+									evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
+									
+									// Return
+									return;
+								}
+								
+								// Try
+								try {
+								
+									// Set data to buffer
+									data = Json::base64Encode(buffer);
+								}
+								
+								// Catch errors
+								catch(...) {
+								
+									// Reply with internal server error to request
+									evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
+									
+									// Return
+									return;
+								}
 							}
 						
 							// Set response
@@ -3259,14 +3276,14 @@ int main(int argc, char *argv[]) {
 									if(inet_pton(AF_INET6, listenAddress->c_str(), temp) == 1) {
 									
 										// Display message
-										cout << "Listening at " << (*usingTlsServer ? "wss" : "ws") << "://[" << *listenAddress << ']' << (displayPort ? ':' + to_string(*listenPort) : "") << endl;
+										cout << "Listening at " << (*usingTlsServer ? "https" : "http") << "://[" << *listenAddress << ']' << (displayPort ? ':' + to_string(*listenPort) : "") << endl;
 									}
 									
 									// Otherwise
 									else {
 									
 										// Display message
-										cout << "Listening at " << (*usingTlsServer ? "wss" : "ws") << "://" << *listenAddress << (displayPort ? ':' + to_string(*listenPort) : "") << endl;
+										cout << "Listening at " << (*usingTlsServer ? "https" : "http") << "://" << *listenAddress << (displayPort ? ':' + to_string(*listenPort) : "") << endl;
 									}
 								}
 							}
