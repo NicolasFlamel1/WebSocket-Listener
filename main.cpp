@@ -382,7 +382,7 @@ static const unordered_map<string, string> getCookies(const string &cookieHttpHe
 static const string getRandomSessionId();
 
 // Get random URL
-static const string getRandomUrl(const string &torHiddenServiceAddress);
+static const string getRandomUrl(const string &onionServiceAddress);
 
 
 // Main function
@@ -723,8 +723,8 @@ int main(int argc, char *argv[]) {
 		}), tlsContext.get());
 	}
 	
-	// Initialize Tor hidden service address
-	string torHiddenServiceAddress;
+	// Initialize Onion Service address
+	string onionServiceAddress;
 	
 	// Initialize clients
 	unordered_map<evhttp_connection *, Client> clients;
@@ -823,7 +823,7 @@ int main(int argc, char *argv[]) {
 	unordered_map<string, unordered_set<string>> urls;
 	
 	// Initialize HTTP server request callback argument
-	tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> httpServerRequestCallbackArgument(&usingTlsServer, &torHiddenServiceAddress, &clients, &urls);
+	tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> httpServerRequestCallbackArgument(&usingTlsServer, &onionServiceAddress, &clients, &urls);
 	
 	// Set HTTP server WebSocket request callback
 	evhttp_set_cb(httpServer.get(), "/", ([](evhttp_request *request, void *argument) {
@@ -834,8 +834,8 @@ int main(int argc, char *argv[]) {
 		// Get using TLS server from HTTP server request callback argument
 		const bool *usingTlsServer = get<0>(*httpServerRequestCallbackArgument);
 		
-		// Get Tor hidden service address from HTTP server request callback argument
-		const string *torHiddenServiceAddress = get<1>(*httpServerRequestCallbackArgument);
+		// Get Onion Service address from HTTP server request callback argument
+		const string *onionServiceAddress = get<1>(*httpServerRequestCallbackArgument);
 		
 		// Get clients from HTTP server request callback argument
 		unordered_map<evhttp_connection *, Client> *clients = get<2>(*httpServerRequestCallbackArgument);
@@ -1034,7 +1034,7 @@ int main(int argc, char *argv[]) {
 						else {
 						
 							// Check if creating connection's buffer callbacks argument failed
-							unique_ptr<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *>> connectionsBufferCallbacksArgument = make_unique<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *>>(connection, message.get(), torHiddenServiceAddress, clients, urls);
+							unique_ptr<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *>> connectionsBufferCallbacksArgument = make_unique<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *>>(connection, message.get(), onionServiceAddress, clients, urls);
 							if(!connectionsBufferCallbacksArgument) {
 							
 								// Reply with internal server error to request
@@ -1069,8 +1069,8 @@ int main(int argc, char *argv[]) {
 									// Get message from connection's buffer callbacks argument
 									unique_ptr<string> message(get<1>(*connectionsBufferCallbacksArgument));
 									
-									// Get Tor hidden service address from connection's buffer callbacks argument
-									const string *torHiddenServiceAddress = get<2>(*connectionsBufferCallbacksArgument);
+									// Get Onion Service address from connection's buffer callbacks argument
+									const string *onionServiceAddress = get<2>(*connectionsBufferCallbacksArgument);
 									
 									// Get clients from connection's buffer callbacks argument
 									unordered_map<evhttp_connection *, Client> *clients = get<3>(*connectionsBufferCallbacksArgument);
@@ -1528,7 +1528,7 @@ int main(int argc, char *argv[]) {
 																									while(true) {
 																									
 																										// Set URL to random URL
-																										url = getRandomUrl(*torHiddenServiceAddress);
+																										url = getRandomUrl(*onionServiceAddress);
 																										
 																										// Initialize URL in use
 																										bool urlInUse = false;
@@ -1603,7 +1603,7 @@ int main(int argc, char *argv[]) {
 																											while(true) {
 																											
 																												// Set URL to random URL
-																												url = getRandomUrl(*torHiddenServiceAddress);
+																												url = getRandomUrl(*onionServiceAddress);
 																												
 																												// Initialize URL in use
 																												bool urlInUse = false;
@@ -2392,7 +2392,7 @@ int main(int argc, char *argv[]) {
 	evhttp_set_allowed_methods(torServer.get(), EVHTTP_REQ_POST | EVHTTP_REQ_OPTIONS);
 	
 	// Initialize Tor server request callback argument
-	tuple<const string *, unordered_map<evhttp_connection *, Client> *, const unordered_map<string, unordered_set<string>> *> torServerRequestCallbackArgument(&torHiddenServiceAddress, &clients, &urls);
+	tuple<const string *, unordered_map<evhttp_connection *, Client> *, const unordered_map<string, unordered_set<string>> *> torServerRequestCallbackArgument(&onionServiceAddress, &clients, &urls);
 	
 	// Set Tor server request callback
 	evhttp_set_gencb(torServer.get(), ([](evhttp_request *request, void *argument) {
@@ -2400,8 +2400,8 @@ int main(int argc, char *argv[]) {
 		// Get Tor server request callback argument from argument
 		tuple<const string *, unordered_map<evhttp_connection *, Client> *, const unordered_map<string, unordered_set<string>> *> *torServerRequestCallbackArgument = reinterpret_cast<tuple<const string *, unordered_map<evhttp_connection *, Client> *, const unordered_map<string, unordered_set<string>> *> *>(argument);
 		
-		// Get Tor hidden service address from Tor server request callback argument
-		const string *torHiddenServiceAddress = get<0>(*torServerRequestCallbackArgument);
+		// Get Onion Service address from Tor server request callback argument
+		const string *onionServiceAddress = get<0>(*torServerRequestCallbackArgument);
 		
 		// Get clients from Tor server request callback argument
 		unordered_map<evhttp_connection *, Client> *clients = get<1>(*torServerRequestCallbackArgument);
@@ -2470,7 +2470,7 @@ int main(int argc, char *argv[]) {
 				else {
 				
 					// Set URL
-					const string url = "http://" + *torHiddenServiceAddress + ".onion" + Common::toLowerCase(path.substr(0, urlDelimiter));
+					const string url = "http://" + *onionServiceAddress + ".onion" + Common::toLowerCase(path.substr(0, urlDelimiter));
 					
 					// Set API
 					const string api = path.substr(urlDelimiter);
@@ -2943,7 +2943,7 @@ int main(int argc, char *argv[]) {
 	bool torConnected = false;
 	
 	// Initialize Tor connection callbacks argument
-	tuple<const string *, const uint16_t *, const bool *, evhttp *, string *, evhttp *, bool *> torConnectionCallbacksArgument(&listenAddress, &listenPort, &usingTlsServer, httpServer.get(), &torHiddenServiceAddress, torServer.get(), &torConnected);
+	tuple<const string *, const uint16_t *, const bool *, evhttp *, string *, evhttp *, bool *> torConnectionCallbacksArgument(&listenAddress, &listenPort, &usingTlsServer, httpServer.get(), &onionServiceAddress, torServer.get(), &torConnected);
 	
 	// Set Tor connection callbacks
 	bufferevent_setcb(torConnection.get(), ([](bufferevent *torConnection, void *argument) {
@@ -2963,8 +2963,8 @@ int main(int argc, char *argv[]) {
 		// Get HTTP server from Tor connection callbacks arguments
 		evhttp *httpServer = get<3>(*torConnectionCallbacksArgument);
 		
-		// Get Tor hidden service address from Tor connection callbacks argument
-		string *torHiddenServiceAddress = get<4>(*torConnectionCallbacksArgument);
+		// Get Onion Service address from Tor connection callbacks argument
+		string *onionServiceAddress = get<4>(*torConnectionCallbacksArgument);
 		
 		// Get Tor server from Tor connection callbacks arguments
 		evhttp *torServer = get<5>(*torConnectionCallbacksArgument);
@@ -3074,14 +3074,14 @@ int main(int argc, char *argv[]) {
 							// Otherwise
 							else {
 							
-								// Initialize create Tor hidden service command
-								const string createTorHiddenServiceCommand = "ADD_ONION NEW:BEST Flags=DiscardPK Port=80," + to_string(ntohs(socketDetails.sin_port)) + "\n";
+								// Initialize create Onion Service command
+								const string createOnionServiceCommand = "ADD_ONION NEW:BEST Flags=DiscardPK Port=80," + to_string(ntohs(socketDetails.sin_port)) + "\n";
 								
-								// Check if creating Tor hidden service with the Tor connection failed
-								if(bufferevent_write(torConnection, createTorHiddenServiceCommand.c_str(), createTorHiddenServiceCommand.length())) {
+								// Check if creating Onion Service with the Tor connection failed
+								if(bufferevent_write(torConnection, createOnionServiceCommand.c_str(), createOnionServiceCommand.length())) {
 								
 									// Display message
-									cout << "Creating Tor hidden service with the Tor connection failed" << endl;
+									cout << "Creating Onion Service with the Tor connection failed" << endl;
 									
 									// Remove Tor connection callbacks
 									bufferevent_setcb(torConnection, nullptr, nullptr, nullptr, nullptr);
@@ -3208,17 +3208,17 @@ int main(int argc, char *argv[]) {
 				// Otherwise
 				else {
 				
-					// Check if got Tor hidden service information
-					const char torHiddenServiceInformationMessage[] = "250-ServiceID=";
+					// Check if got Onion Service information
+					const char onionServiceInformationMessage[] = "250-ServiceID=";
 					
-					if(length >= sizeof(torHiddenServiceInformationMessage) - sizeof('\0') && !memcmp(data, torHiddenServiceInformationMessage, sizeof(torHiddenServiceInformationMessage) - sizeof('\0'))) {
+					if(length >= sizeof(onionServiceInformationMessage) - sizeof('\0') && !memcmp(data, onionServiceInformationMessage, sizeof(onionServiceInformationMessage) - sizeof('\0'))) {
 					
-						// Check if getting Tor hidden service address delimiter failed
-						const uint8_t *addressDelimiter = reinterpret_cast<uint8_t *>(memchr(&data[sizeof(torHiddenServiceInformationMessage) - sizeof('\0')], '\r', length - (sizeof(torHiddenServiceInformationMessage) - sizeof('\0'))));
+						// Check if getting Onion Service address delimiter failed
+						const uint8_t *addressDelimiter = reinterpret_cast<uint8_t *>(memchr(&data[sizeof(onionServiceInformationMessage) - sizeof('\0')], '\r', length - (sizeof(onionServiceInformationMessage) - sizeof('\0'))));
 						if(!addressDelimiter) {
 						
 							// Display message
-							cout << "Getting Tor hidden service address delimiter failed" << endl;
+							cout << "Getting Onion Service address delimiter failed" << endl;
 							
 							// Remove Tor connection callbacks
 							bufferevent_setcb(torConnection, nullptr, nullptr, nullptr, nullptr);
@@ -3230,14 +3230,14 @@ int main(int argc, char *argv[]) {
 						// Otherwise
 						else {
 						
-							// Get Tor hidden service address
-							string address(reinterpret_cast<char *>(&data[sizeof(torHiddenServiceInformationMessage) - sizeof('\0')]), addressDelimiter - &data[sizeof(torHiddenServiceInformationMessage) - sizeof('\0')]);
+							// Get Onion Service address
+							string address(reinterpret_cast<char *>(&data[sizeof(onionServiceInformationMessage) - sizeof('\0')]), addressDelimiter - &data[sizeof(onionServiceInformationMessage) - sizeof('\0')]);
 							
-							// Check if Tor hidden service address is invalid
+							// Check if Onion Service address is invalid
 							if(address.empty()) {
 							
 								// Display message
-								cout << "Tor hidden service address is invalid" << endl;
+								cout << "Onion Service address is invalid" << endl;
 								
 								// Remove Tor connection callbacks
 								bufferevent_setcb(torConnection, nullptr, nullptr, nullptr, nullptr);
@@ -3265,8 +3265,8 @@ int main(int argc, char *argv[]) {
 								// Otherwise
 								else {
 								
-									// Set Tor hidden service address to address
-									*torHiddenServiceAddress = address;
+									// Set Onion Service address to address
+									*onionServiceAddress = address;
 									
 									// Set display port to if the listen port doesn't match the default server port
 									const bool displayPort = (!*usingTlsServer && *listenPort != HTTP_PORT) || (*usingTlsServer && *listenPort != HTTPS_PORT);
@@ -3294,7 +3294,7 @@ int main(int argc, char *argv[]) {
 					else {
 					
 						// Display message
-						cout << "Getting Tor hidden service information failed" << endl;
+						cout << "Getting Onion Service information failed" << endl;
 						
 						// Remove Tor connection callbacks
 						bufferevent_setcb(torConnection, nullptr, nullptr, nullptr, nullptr);
@@ -3705,7 +3705,7 @@ const string getRandomSessionId() {
 }
 
 // Get random URL
-const string getRandomUrl(const string &torHiddenServiceAddress) {
+const string getRandomUrl(const string &onionServiceAddress) {
 
 	// Initialize generator
 	random_device device;
@@ -3726,7 +3726,7 @@ const string getRandomUrl(const string &torHiddenServiceAddress) {
 	urlLength = urlLength % (URL_MAXIMUM_LENGTH - URL_MINIMUM_LENGTH + 1) + URL_MINIMUM_LENGTH;
 	
 	// Initialize URL
-	string url = "http://" + torHiddenServiceAddress + ".onion/";
+	string url = "http://" + onionServiceAddress + ".onion/";
 	
 	// Go through all characters in the URL
 	for(size_t i = 0; i < urlLength; ++i) {
