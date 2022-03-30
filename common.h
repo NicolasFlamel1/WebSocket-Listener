@@ -43,6 +43,15 @@ class Common final {
 		// Is numeric
 		static bool isNumeric(const string &text);
 		
+		// Gzip
+		static bool gzip(vector<uint8_t> &output, const vector<uint8_t> &input);
+		
+		// Inflate
+		static bool inflate(vector<uint8_t> &output, const vector<uint8_t> &input);
+		
+		// Deflate
+		static bool deflate(vector<uint8_t> &output, const vector<uint8_t> &input);
+		
 		// Microseconds in a millisecond
 		static const int MICROSECONDS_IN_A_MILLISECOND;
 		
@@ -72,6 +81,29 @@ class Common final {
 		
 		// Kilobytes in a megabyte
 		static const int KILOBYTE_IN_A_MEGABYTE;
+		
+		// Deflate BFINAL flag
+		static const uint8_t DEFLATE_BFINAL_FLAG;
+	
+	// Private
+	
+		// Compress
+		static bool compress(vector<uint8_t> &output, const vector<uint8_t> &input, int windowBits);
+		
+		// Decompress
+		static bool decompress(vector<uint8_t> &output, const vector<uint8_t> &input, int windowBits);
+	
+		// Chunk size
+		static const size_t CHUNK_SIZE;
+
+		// Window bits
+		static const int WINDOWS_BITS;
+
+		// Deflate scalar
+		static const int DEFLATE_SCALAR;
+
+		// Gzip flag
+		static const int GZIP_FLAG;
 };
 
 

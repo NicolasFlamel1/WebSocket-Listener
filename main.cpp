@@ -108,6 +108,9 @@ static const size_t WEBSOCKET_EXTENSION_BYTE_OFFSET = 0;
 // WebSocket extension byte mask
 static const uint8_t WEBSOCKET_EXTENSION_BYTE_MASK = 0x70;
 
+// WebSocket compressed extension byte mask
+static const uint8_t WEBSOCKET_COMPRESSED_EXTENSION_BYTE_MASK = 0x40;
+
 // WebSocket mask byte offset
 static const size_t WEBSOCKET_MASK_BYTE_OFFSET = 1;
 
@@ -128,6 +131,9 @@ static const uint8_t WEBSOCKET_SIXTY_THREE_BITS_LENGTH = 0x7F;
 
 // WebSocket mask length
 static const size_t WEBSOCKET_MASK_LENGTH = 4;
+
+// WebSocket compressed message tail
+static const vector<uint8_t> WEBSOCKET_COMPRESSED_MESSAGE_TAIL = {0x00, 0x00, 0xFF, 0xFF};
 
 // Maximum safe integer
 static const uint64_t MAXIMUM_SAFE_INTEGER = pow(2, 53) - 1;
@@ -180,6 +186,9 @@ static const size_t MAXIMUM_BODY_SIZE = 10 * Common::KILOBYTE_IN_A_MEGABYTE * Co
 // No socket
 static const evutil_socket_t NO_SOCKET = -1;
 
+// Minimum compress length
+static const size_t MINIMUM_COMPRESSION_LENGTH = 1000;
+
 // WebSocket Opcode
 enum class WebSocketOpcode {
 
@@ -206,13 +215,16 @@ class Client final {
 	public:
 	
 		// Constructor
-		Client(const string &sessionId) :
+		Client(const string &sessionId, bool supportsCompression) :
 		
 			// Set session ID
 			sessionId(sessionId),
 		
 			// Set interaction index
-			interactionIndex(0)
+			interactionIndex(0),
+			
+			// Set supports compression
+			supportsCompression(supportsCompression)
 		{
 		}
 		
@@ -316,6 +328,13 @@ class Client final {
 			// Return null
 			return nullptr;
 		}
+		
+		// Get supports compression
+		bool getSupportsCompression() const {
+		
+			// Return supports compression
+			return supportsCompression;
+		}
 	
 	// Private
 	private:
@@ -328,6 +347,9 @@ class Client final {
 		
 		// Interactions
 		unordered_map<Json::Number, evhttp_request *> interactions;
+		
+		// Supports Compression
+		bool supportsCompression;
 };
 
 // Check if Windows
@@ -373,7 +395,7 @@ class Client final {
 // Function prototypes
 
 // Create WebSocket response
-static const vector<uint8_t> createWebSocketResponse(const string &message, WebSocketOpcode opcode);
+static const vector<uint8_t> createWebSocketResponse(const string &message, WebSocketOpcode opcode, bool supportsCompression);
 
 // Get cookies
 static const unordered_map<string, string> getCookies(const string &cookieHttpHeader);
@@ -765,7 +787,7 @@ int main(int argc, char *argv[]) {
 			else {
 		
 				// Get ping message
-				const vector<uint8_t> pingMessage = createWebSocketResponse("", WebSocketOpcode::PING);
+				const vector<uint8_t> pingMessage = createWebSocketResponse("", WebSocketOpcode::PING, clients->at(connection).getSupportsCompression());
 				
 				// Check if sending ping message to client failed
 				if(bufferevent_write(connectionsBuffer, pingMessage.data(), pingMessage.size())) {
@@ -999,8 +1021,41 @@ int main(int argc, char *argv[]) {
 					return;
 				}
 				
+				// Initialize supports compression
+				bool supportsCompression = false;
+				
+				// Check if WebSocket extensions are provided
+				if(httpHeaders.count("sec-websocket-extensions")) {
+				
+					// Get extensions
+					const string &extensions = httpHeaders.at("sec-websocket-extensions");
+				
+					// Go through all extensions
+					for(string::size_type startOfExtension = 0, endOfExtension = extensions.find(';', startOfExtension);; startOfExtension = endOfExtension + sizeof(';'), endOfExtension = extensions.find(';', startOfExtension)) {
+					
+						// Get extension
+						const string extension = Common::trim(extensions.substr(startOfExtension, (endOfExtension != string::npos) ? endOfExtension - startOfExtension : string::npos));
+						
+						// Check if extension is per-message deflate
+						if(extension == "permessage-deflate") {
+						
+							// Set supports compression
+							supportsCompression = true;
+							
+							// Break
+							break;
+						}
+						
+						// Check if at the last extension
+						if(endOfExtension == string::npos)
+						
+							// Break
+							break;
+					}
+				}
+				
 				// Check if setting HTTP headers to finalize WebSocket handshake failed
-				if(evhttp_add_header(evhttp_request_get_output_headers(request), "Upgrade", "websocket") || evhttp_add_header(evhttp_request_get_output_headers(request), "Connection", "Upgrade") || evhttp_add_header(evhttp_request_get_output_headers(request), "Sec-WebSocket-Accept", responseKey.c_str()) || evhttp_add_header(evhttp_request_get_output_headers(request), "Set-Cookie", (string(SESSION_ID_COOKIE_NAME) + '=' + sessionId + "; Max-Age=" + to_string(SESSION_ID_COOKIE_MAXIMUM_AGE_SECONDS) + "; HttpOnly; Secure; SameSite=None; Priority=High; Path=/").c_str())) {
+				if(evhttp_add_header(evhttp_request_get_output_headers(request), "Upgrade", "websocket") || evhttp_add_header(evhttp_request_get_output_headers(request), "Connection", "Upgrade") || evhttp_add_header(evhttp_request_get_output_headers(request), "Sec-WebSocket-Accept", responseKey.c_str()) || evhttp_add_header(evhttp_request_get_output_headers(request), "Set-Cookie", (string(SESSION_ID_COOKIE_NAME) + '=' + sessionId + "; Max-Age=" + to_string(SESSION_ID_COOKIE_MAXIMUM_AGE_SECONDS) + "; HttpOnly; Secure; SameSite=None; Priority=High; Path=/").c_str()) || (supportsCompression && evhttp_add_header(evhttp_request_get_output_headers(request), "Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover; client_no_context_takeover"))) {
 				
 					// Reply with internal server error to request
 					evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -1033,9 +1088,9 @@ int main(int argc, char *argv[]) {
 						// Otherwise
 						else {
 						
-							// Check if creating connection's buffer callbacks argument failed
-							unique_ptr<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *>> connectionsBufferCallbacksArgument = make_unique<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *>>(connection, message.get(), onionServiceAddress, clients, urls);
-							if(!connectionsBufferCallbacksArgument) {
+							// Check if creating message compressed failed
+							unique_ptr<bool> messageCompressed = make_unique<bool>(false);
+							if(!messageCompressed) {
 							
 								// Reply with internal server error to request
 								evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -1043,91 +1098,65 @@ int main(int argc, char *argv[]) {
 							
 							// Otherwise
 							else {
-							
-								// Reply with switching protocol response to request
-								evhttp_send_reply(request, HTTP_SWITCHING_PROTOCOL, nullptr, nullptr);
+						
+								// Check if creating connection's buffer callbacks argument failed
+								unique_ptr<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *, bool *>> connectionsBufferCallbacksArgument = make_unique<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *, bool *>>(connection, message.get(), onionServiceAddress, clients, urls, messageCompressed.get());
+								if(!connectionsBufferCallbacksArgument) {
 								
-								// Add connection to list of clients
-								clients->emplace(connection, sessionId);
-								
-								// Check if URLs doesn't exist for the session ID
-								if(!urls->count(sessionId)) {
-								
-									// Add session ID to URLs list
-									urls->emplace(sessionId, unordered_set<string>());
+									// Reply with internal server error to request
+									evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
 								}
 								
-								// Set connection's buffer callbacks
-								bufferevent_setcb(evhttp_connection_get_bufferevent(connection), ([](bufferevent *connectionsBuffer, void *argument) {
+								// Otherwise
+								else {
 								
-									// Get connection's buffer callbacks argument from argument
-									unique_ptr<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *>> connectionsBufferCallbacksArgument(reinterpret_cast<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *>(argument));
+									// Reply with switching protocol response to request
+									evhttp_send_reply(request, HTTP_SWITCHING_PROTOCOL, nullptr, nullptr);
 									
-									// Get connection from connection's buffer callbacks argument
-									evhttp_connection *connection = get<0>(*connectionsBufferCallbacksArgument);
+									// Add connection to list of clients
+									clients->emplace(connection, Client(sessionId, supportsCompression));
 									
-									// Get message from connection's buffer callbacks argument
-									unique_ptr<string> message(get<1>(*connectionsBufferCallbacksArgument));
+									// Check if URLs doesn't exist for the session ID
+									if(!urls->count(sessionId)) {
 									
-									// Get Onion Service address from connection's buffer callbacks argument
-									const string *onionServiceAddress = get<2>(*connectionsBufferCallbacksArgument);
-									
-									// Get clients from connection's buffer callbacks argument
-									unordered_map<evhttp_connection *, Client> *clients = get<3>(*connectionsBufferCallbacksArgument);
-									
-									// Get URLs from connection's buffer callbacks argument
-									unordered_map<string, unordered_set<string>> *urls = get<4>(*connectionsBufferCallbacksArgument);
-								
-									// Check if getting input from the connection's buffer failed
-									evbuffer *input = bufferevent_get_input(connectionsBuffer);
-									if(!input) {
-									
-										// Remove connection's buffer callbacks
-										bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-									
-										// Check if connection still exists
-										if(clients->count(connection)) {
-									
-											// Close connection
-											evhttp_connection_free(connection);
-											
-											// Cancel all client's interactions
-											clients->at(connection).cancelAllInteractions();
-											
-											// Remove connection from list of clients
-											clients->erase(connection);
-										}
+										// Add session ID to URLs list
+										urls->emplace(sessionId, unordered_set<string>());
 									}
 									
-									// Otherwise
-									else {
+									// Set connection's buffer callbacks
+									bufferevent_setcb(evhttp_connection_get_bufferevent(connection), ([](bufferevent *connectionsBuffer, void *argument) {
 									
-										// Get input's length
-										size_t length = evbuffer_get_length(input);
+										// Get connection's buffer callbacks argument from argument
+										unique_ptr<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *, bool *>> connectionsBufferCallbacksArgument(reinterpret_cast<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *, bool *> *>(argument));
 										
-										// Check if connection doesn't exist
-										if(!clients->count(connection)) {
+										// Get connection from connection's buffer callbacks argument
+										evhttp_connection *connection = get<0>(*connectionsBufferCallbacksArgument);
 										
-											// Remove data from input
-											evbuffer_drain(input, length);
+										// Get message from connection's buffer callbacks argument
+										unique_ptr<string> message(get<1>(*connectionsBufferCallbacksArgument));
+										
+										// Get Onion Service address from connection's buffer callbacks argument
+										const string *onionServiceAddress = get<2>(*connectionsBufferCallbacksArgument);
+										
+										// Get clients from connection's buffer callbacks argument
+										unordered_map<evhttp_connection *, Client> *clients = get<3>(*connectionsBufferCallbacksArgument);
+										
+										// Get URLs from connection's buffer callbacks argument
+										unordered_map<string, unordered_set<string>> *urls = get<4>(*connectionsBufferCallbacksArgument);
+										
+										// Get message compressed from connection's buffer callbacks argument
+										unique_ptr<bool> messageCompressed(get<5>(*connectionsBufferCallbacksArgument));
+									
+										// Check if getting input from the connection's buffer failed
+										evbuffer *input = bufferevent_get_input(connectionsBuffer);
+										if(!input) {
 										
 											// Remove connection's buffer callbacks
 											bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-										}
 										
-										// Otherwise
-										else {
+											// Check if connection still exists
+											if(clients->count(connection)) {
 										
-											// Check if getting data from input failed
-											uint8_t data[length];
-											if(evbuffer_copyout(input, data, length) == -1) {
-											
-												// Remove data from input
-												evbuffer_drain(input, length);
-											
-												// Remove connection's buffer callbacks
-												bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-												
 												// Close connection
 												evhttp_connection_free(connection);
 												
@@ -1137,255 +1166,70 @@ int main(int argc, char *argv[]) {
 												// Remove connection from list of clients
 												clients->erase(connection);
 											}
+										}
+										
+										// Otherwise
+										else {
+										
+											// Get input's length
+											size_t length = evbuffer_get_length(input);
+											
+											// Check if connection doesn't exist
+											if(!clients->count(connection)) {
+											
+												// Remove data from input
+												evbuffer_drain(input, length);
+											
+												// Remove connection's buffer callbacks
+												bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+											}
 											
 											// Otherwise
 											else {
 											
-												// Go through all WebSocket frames
-												while(true) {
+												// Check if getting data from input failed
+												uint8_t data[length];
+												if(evbuffer_copyout(input, data, length) == -1) {
 												
-													// Check if frame contains an opcode
-													if(length > WEBSOCKET_OPCODE_BYTE_OFFSET) {
+													// Remove data from input
+													evbuffer_drain(input, length);
+												
+													// Remove connection's buffer callbacks
+													bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
 													
-														// Get opcode
-														WebSocketOpcode opcode = static_cast<WebSocketOpcode>(data[WEBSOCKET_OPCODE_BYTE_OFFSET] & WEBSOCKET_OPCODE_BYTE_MASK);
+													// Close connection
+													evhttp_connection_free(connection);
+													
+													// Cancel all client's interactions
+													clients->at(connection).cancelAllInteractions();
+													
+													// Remove connection from list of clients
+													clients->erase(connection);
+												}
+												
+												// Otherwise
+												else {
+												
+													// Go through all WebSocket frames
+													while(true) {
+													
+														// Check if frame contains an opcode
+														if(length > WEBSOCKET_OPCODE_BYTE_OFFSET) {
 														
-														// Get is final frame
-														const bool isFinalFrame = data[WEBSOCKET_FINAL_FRAME_BYTE_OFFSET] & WEBSOCKET_FINAL_FRAME_BYTE_MASK;
-														
-														// Check opcode
-														switch(opcode) {
-														
-															// Continuation
-															case WebSocketOpcode::CONTINUATION:
+															// Get opcode
+															WebSocketOpcode opcode = static_cast<WebSocketOpcode>(data[WEBSOCKET_OPCODE_BYTE_OFFSET] & WEBSOCKET_OPCODE_BYTE_MASK);
 															
-																// Check if no there is no frame to continue
-																if(message->empty()) {
+															// Get is final frame
+															const bool isFinalFrame = data[WEBSOCKET_FINAL_FRAME_BYTE_OFFSET] & WEBSOCKET_FINAL_FRAME_BYTE_MASK;
+															
+															// Check opcode
+															switch(opcode) {
+															
+																// Continuation
+																case WebSocketOpcode::CONTINUATION:
 																
-																	// Remove data from input
-																	evbuffer_drain(input, length);
-																
-																	// Remove connection's buffer callbacks
-																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-																	
-																	// Close connection
-																	evhttp_connection_free(connection);
-																	
-																	// Cancel all client's interactions
-																	clients->at(connection).cancelAllInteractions();
-																	
-																	// Remove connection from list of clients
-																	clients->erase(connection);
-																	
-																	// Return
-																	return;
-																}
-																
-																// Break
-																break;
-															
-															// Ping or pong
-															case WebSocketOpcode::PING:
-															case WebSocketOpcode::PONG:
-															
-																// Check if frame isn't the final frame
-																if(!isFinalFrame) {
-																
-																	// Remove data from input
-																	evbuffer_drain(input, length);
-																
-																	// Remove connection's buffer callbacks
-																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-																	
-																	// Close connection
-																	evhttp_connection_free(connection);
-																	
-																	// Cancel all client's interactions
-																	clients->at(connection).cancelAllInteractions();
-																	
-																	// Remove connection from list of clients
-																	clients->erase(connection);
-																	
-																	// Return
-																	return;
-																}
-																
-																// Break
-																break;
-															
-															// Text
-															case WebSocketOpcode::TEXT:
-															
-																// Break
-																break;
-															
-															// Default
-															default:
-															
-																// Remove data from input
-																evbuffer_drain(input, length);
-															
-																// Remove connection's buffer callbacks
-																bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-																
-																// Close connection
-																evhttp_connection_free(connection);
-																
-																// Cancel all client's interactions
-																clients->at(connection).cancelAllInteractions();
-																
-																// Remove connection from list of clients
-																clients->erase(connection);
-																
-																// Return
-																return;
-														}
-														
-														// Get has extension
-														const bool hasExtension = data[WEBSOCKET_EXTENSION_BYTE_OFFSET] & WEBSOCKET_EXTENSION_BYTE_MASK;
-														
-														// Check if has extension
-														if(hasExtension) {
-														
-															// Remove data from input
-															evbuffer_drain(input, length);
-														
-															// Remove connection's buffer callbacks
-															bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-															
-															// Close connection
-															evhttp_connection_free(connection);
-															
-															// Cancel all client's interactions
-															clients->at(connection).cancelAllInteractions();
-															
-															// Remove connection from list of clients
-															clients->erase(connection);
-															
-															// Return
-															return;
-														}
-														
-														// Check if frame contains a length
-														if(length > WEBSOCKET_LENGTH_BYTE_OFFSET) {
-														
-															// Get has mask
-															const bool hasMask = data[WEBSOCKET_MASK_BYTE_OFFSET] & WEBSOCKET_MASK_BYTE_MASK;
-															
-															// Check if doesn't have a mask
-															if(!hasMask) {
-															
-																// Remove data from input
-																evbuffer_drain(input, length);
-															
-																// Remove connection's buffer callbacks
-																bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-																
-																// Close connection
-																evhttp_connection_free(connection);
-																
-																// Cancel all client's interactions
-																clients->at(connection).cancelAllInteractions();
-																
-																// Remove connection from list of clients
-																clients->erase(connection);
-																
-																// Return
-																return;
-															}
-															
-															// Get real length
-															uint64_t realLength = data[WEBSOCKET_LENGTH_BYTE_OFFSET] & WEBSOCKET_LENGTH_BYTE_MASK;
-															
-															// Initialize mask offset
-															size_t maskOffset;
-															
-															// Check if real length is expressed by next sixteen bits
-															if(realLength == WEBSOCKET_SIXTEEN_BITS_LENGTH) {
-															
-																// Check of opcode is a ping or pong
-																if(opcode == WebSocketOpcode::PING || opcode == WebSocketOpcode::PONG) {
-																
-																	// Remove data from input
-																	evbuffer_drain(input, length);
-																
-																	// Remove connection's buffer callbacks
-																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-																	
-																	// Close connection
-																	evhttp_connection_free(connection);
-																	
-																	// Cancel all client's interactions
-																	clients->at(connection).cancelAllInteractions();
-																	
-																	// Remove connection from list of clients
-																	clients->erase(connection);
-																	
-																	// Return
-																	return;
-																}
-															
-																// Check if frame contains real length
-																if(length > WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint16_t)) {
-																
-																	// Go through all real length bytes
-																	realLength = 0;
-																	for(size_t i = 0; i < sizeof(uint16_t); ++i) {
-																	
-																		// Include length byte in real length
-																		realLength |= data[WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint16_t) - sizeof(uint8_t) * i] << (Common::BITS_IN_A_BYTE * i);
-																	}
-																	
-																	// Set mask offsets
-																	maskOffset = WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint16_t) + sizeof(uint8_t);
-																}
-																
-																// Otherwise
-																else {
-																
-																	// Break
-																	break;
-																}
-															}
-															
-															// Otherwise check if real length is expressed by next sixty-three bits
-															else if(realLength == WEBSOCKET_SIXTY_THREE_BITS_LENGTH) {
-															
-																// Check of opcode is a ping or pong
-																if(opcode == WebSocketOpcode::PING || opcode == WebSocketOpcode::PONG) {
-																
-																	// Remove data from input
-																	evbuffer_drain(input, length);
-																
-																	// Remove connection's buffer callbacks
-																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-																	
-																	// Close connection
-																	evhttp_connection_free(connection);
-																	
-																	// Cancel all client's interactions
-																	clients->at(connection).cancelAllInteractions();
-																	
-																	// Remove connection from list of clients
-																	clients->erase(connection);
-																	
-																	// Return
-																	return;
-																}
-															
-																// Check if frame contains real length
-																if(length > WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint64_t)) {
-																
-																	// Go through all real length bytes
-																	realLength = 0;
-																	for(size_t i = 0; i < sizeof(uint64_t); ++i) {
-																	
-																		// Include length byte in real length
-																		realLength |= static_cast<uint64_t>(data[WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint64_t) - sizeof(uint8_t) * i]) << (Common::BITS_IN_A_BYTE * i);
-																	}
-																	
-																	// Check if real length is invalid
-																	if(realLength > INT64_MAX) {
+																	// Check if no there is no frame to continue
+																	if(message->empty()) {
 																	
 																		// Remove data from input
 																		evbuffer_drain(input, length);
@@ -1406,63 +1250,140 @@ int main(int argc, char *argv[]) {
 																		return;
 																	}
 																	
-																	// Set mask offsets
-																	maskOffset = WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint64_t) + sizeof(uint8_t);
+																	// Break
+																	break;
+																
+																// Ping or pong
+																case WebSocketOpcode::PING:
+																case WebSocketOpcode::PONG:
+																
+																	// Check if frame isn't the final frame
+																	if(!isFinalFrame) {
+																	
+																		// Remove data from input
+																		evbuffer_drain(input, length);
+																	
+																		// Remove connection's buffer callbacks
+																		bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																		
+																		// Close connection
+																		evhttp_connection_free(connection);
+																		
+																		// Cancel all client's interactions
+																		clients->at(connection).cancelAllInteractions();
+																		
+																		// Remove connection from list of clients
+																		clients->erase(connection);
+																		
+																		// Return
+																		return;
+																	}
+																	
+																	// Break
+																	break;
+																
+																// Text
+																case WebSocketOpcode::TEXT:
+																
+																	// Break
+																	break;
+																
+																// Default
+																default:
+																
+																	// Remove data from input
+																	evbuffer_drain(input, length);
+																
+																	// Remove connection's buffer callbacks
+																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																	
+																	// Close connection
+																	evhttp_connection_free(connection);
+																	
+																	// Cancel all client's interactions
+																	clients->at(connection).cancelAllInteractions();
+																	
+																	// Remove connection from list of clients
+																	clients->erase(connection);
+																	
+																	// Return
+																	return;
+															}
+															
+															// Get extension
+															const uint8_t extension = data[WEBSOCKET_EXTENSION_BYTE_OFFSET] & WEBSOCKET_EXTENSION_BYTE_MASK;
+															
+															// Check if has extension
+															if(extension) {
+															
+																// Check if opcode is text and this is the first frame in the message
+																if(opcode == WebSocketOpcode::TEXT && message->empty()) {
+																
+																	// Check if client doesn't support compression or has an unsupported extension
+																	if(!clients->at(connection).getSupportsCompression() || extension & ~WEBSOCKET_COMPRESSED_EXTENSION_BYTE_MASK) {
+																	
+																		// Remove data from input
+																		evbuffer_drain(input, length);
+																	
+																		// Remove connection's buffer callbacks
+																		bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																		
+																		// Close connection
+																		evhttp_connection_free(connection);
+																		
+																		// Cancel all client's interactions
+																		clients->at(connection).cancelAllInteractions();
+																		
+																		// Remove connection from list of clients
+																		clients->erase(connection);
+																		
+																		// Return
+																		return;
+																	}
+																	
+																	// Otherwise
+																	else {
+																	
+																		// Set message compressed
+																		*messageCompressed = true;
+																	}
 																}
 																
 																// Otherwise
 																else {
+															
+																	// Remove data from input
+																	evbuffer_drain(input, length);
 																
-																	// Break
-																	break;
+																	// Remove connection's buffer callbacks
+																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																	
+																	// Close connection
+																	evhttp_connection_free(connection);
+																	
+																	// Cancel all client's interactions
+																	clients->at(connection).cancelAllInteractions();
+																	
+																	// Remove connection from list of clients
+																	clients->erase(connection);
+																	
+																	// Return
+																	return;
 																}
 															}
 															
-															// Otherwise
-															else {
+															// Check if frame contains a length
+															if(length > WEBSOCKET_LENGTH_BYTE_OFFSET) {
 															
-																// Set mask offsets
-																maskOffset = WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint8_t);
-															}
-															
-															// Check if real length is invalid
-															if(!isFinalFrame && !realLength) {
-															
-																// Remove data from input
-																evbuffer_drain(input, length);
-															
-																// Remove connection's buffer callbacks
-																bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																// Get has mask
+																const bool hasMask = data[WEBSOCKET_MASK_BYTE_OFFSET] & WEBSOCKET_MASK_BYTE_MASK;
 																
-																// Close connection
-																evhttp_connection_free(connection);
-																
-																// Cancel all client's interactions
-																clients->at(connection).cancelAllInteractions();
-																
-																// Remove connection from list of clients
-																clients->erase(connection);
-																
-																// Return
-																return;
-															}
-															
-															// Check if frame contains the mask and data
-															if(length >= maskOffset + WEBSOCKET_MASK_LENGTH + realLength) {
-															
-																// Go through all bytes of data
-																for(uint64_t i = 0; i < realLength; ++i) {
-																
-																	// Append unmasked byte to the message
-																	message->push_back(data[maskOffset + WEBSOCKET_MASK_LENGTH + i] ^ data[maskOffset + i % WEBSOCKET_MASK_LENGTH]);
-																}
-																
-																// Check if removing frame from input failed
-																if(evbuffer_drain(input, maskOffset + WEBSOCKET_MASK_LENGTH + realLength)) {
+																// Check if doesn't have a mask
+																if(!hasMask) {
 																
 																	// Remove data from input
 																	evbuffer_drain(input, length);
-																	
+																
 																	// Remove connection's buffer callbacks
 																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
 																	
@@ -1479,273 +1400,502 @@ int main(int argc, char *argv[]) {
 																	return;
 																}
 																
-																// Remove frame's length from length
-																length -= maskOffset + WEBSOCKET_MASK_LENGTH + realLength;
+																// Get real length
+																uint64_t realLength = data[WEBSOCKET_LENGTH_BYTE_OFFSET] & WEBSOCKET_LENGTH_BYTE_MASK;
 																
-																// Remove frame from data
-																memmove(data, &data[maskOffset + WEBSOCKET_MASK_LENGTH + realLength], length);
+																// Initialize mask offset
+																size_t maskOffset;
 																
-																// Check is the final frame
-																if(isFinalFrame) {
+																// Check if real length is expressed by next sixteen bits
+																if(realLength == WEBSOCKET_SIXTEEN_BITS_LENGTH) {
 																
-																	// Check opcode
-																	switch(opcode) {
+																	// Check of opcode is a ping or pong
+																	if(opcode == WebSocketOpcode::PING || opcode == WebSocketOpcode::PONG) {
 																	
-																		// Text
-																		case WebSocketOpcode::TEXT:
+																		// Remove data from input
+																		evbuffer_drain(input, length);
+																	
+																		// Remove connection's buffer callbacks
+																		bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																		
+																		// Close connection
+																		evhttp_connection_free(connection);
+																		
+																		// Cancel all client's interactions
+																		clients->at(connection).cancelAllInteractions();
+																		
+																		// Remove connection from list of clients
+																		clients->erase(connection);
+																		
+																		// Return
+																		return;
+																	}
+																
+																	// Check if frame contains real length
+																	if(length > WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint16_t)) {
+																	
+																		// Go through all real length bytes
+																		realLength = 0;
+																		for(size_t i = 0; i < sizeof(uint16_t); ++i) {
+																		
+																			// Include length byte in real length
+																			realLength |= data[WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint16_t) - sizeof(uint8_t) * i] << (Common::BITS_IN_A_BYTE * i);
+																		}
+																		
+																		// Set mask offsets
+																		maskOffset = WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint16_t) + sizeof(uint8_t);
+																	}
+																	
+																	// Otherwise
+																	else {
+																	
+																		// Break
+																		break;
+																	}
+																}
+																
+																// Otherwise check if real length is expressed by next sixty-three bits
+																else if(realLength == WEBSOCKET_SIXTY_THREE_BITS_LENGTH) {
+																
+																	// Check of opcode is a ping or pong
+																	if(opcode == WebSocketOpcode::PING || opcode == WebSocketOpcode::PONG) {
+																	
+																		// Remove data from input
+																		evbuffer_drain(input, length);
+																	
+																		// Remove connection's buffer callbacks
+																		bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																		
+																		// Close connection
+																		evhttp_connection_free(connection);
+																		
+																		// Cancel all client's interactions
+																		clients->at(connection).cancelAllInteractions();
+																		
+																		// Remove connection from list of clients
+																		clients->erase(connection);
+																		
+																		// Return
+																		return;
+																	}
+																
+																	// Check if frame contains real length
+																	if(length > WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint64_t)) {
+																	
+																		// Go through all real length bytes
+																		realLength = 0;
+																		for(size_t i = 0; i < sizeof(uint64_t); ++i) {
+																		
+																			// Include length byte in real length
+																			realLength |= static_cast<uint64_t>(data[WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint64_t) - sizeof(uint8_t) * i]) << (Common::BITS_IN_A_BYTE * i);
+																		}
+																		
+																		// Check if real length is invalid
+																		if(realLength > INT64_MAX) {
+																		
+																			// Remove data from input
+																			evbuffer_drain(input, length);
+																		
+																			// Remove connection's buffer callbacks
+																			bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
 																			
-																			{
-																				// Initialize response
-																				string response;
+																			// Close connection
+																			evhttp_connection_free(connection);
+																			
+																			// Cancel all client's interactions
+																			clients->at(connection).cancelAllInteractions();
+																			
+																			// Remove connection from list of clients
+																			clients->erase(connection);
+																			
+																			// Return
+																			return;
+																		}
+																		
+																		// Set mask offsets
+																		maskOffset = WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint64_t) + sizeof(uint8_t);
+																	}
+																	
+																	// Otherwise
+																	else {
+																	
+																		// Break
+																		break;
+																	}
+																}
+																
+																// Otherwise
+																else {
+																
+																	// Set mask offsets
+																	maskOffset = WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint8_t);
+																}
+																
+																// Check if real length is invalid
+																if(!isFinalFrame && !realLength) {
+																
+																	// Remove data from input
+																	evbuffer_drain(input, length);
+																
+																	// Remove connection's buffer callbacks
+																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																	
+																	// Close connection
+																	evhttp_connection_free(connection);
+																	
+																	// Cancel all client's interactions
+																	clients->at(connection).cancelAllInteractions();
+																	
+																	// Remove connection from list of clients
+																	clients->erase(connection);
+																	
+																	// Return
+																	return;
+																}
+																
+																// Check if frame contains the mask and data
+																if(length >= maskOffset + WEBSOCKET_MASK_LENGTH + realLength) {
+																
+																	// Go through all bytes of data
+																	for(uint64_t i = 0; i < realLength; ++i) {
+																	
+																		// Append unmasked byte to the message
+																		message->push_back(data[maskOffset + WEBSOCKET_MASK_LENGTH + i] ^ data[maskOffset + i % WEBSOCKET_MASK_LENGTH]);
+																	}
+																	
+																	// Check if removing frame from input failed
+																	if(evbuffer_drain(input, maskOffset + WEBSOCKET_MASK_LENGTH + realLength)) {
+																	
+																		// Remove data from input
+																		evbuffer_drain(input, length);
+																		
+																		// Remove connection's buffer callbacks
+																		bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																		
+																		// Close connection
+																		evhttp_connection_free(connection);
+																		
+																		// Cancel all client's interactions
+																		clients->at(connection).cancelAllInteractions();
+																		
+																		// Remove connection from list of clients
+																		clients->erase(connection);
+																		
+																		// Return
+																		return;
+																	}
+																	
+																	// Remove frame's length from length
+																	length -= maskOffset + WEBSOCKET_MASK_LENGTH + realLength;
+																	
+																	// Remove frame from data
+																	memmove(data, &data[maskOffset + WEBSOCKET_MASK_LENGTH + realLength], length);
+																	
+																	// Check is the final frame
+																	if(isFinalFrame) {
+																	
+																		// Check opcode
+																		switch(opcode) {
+																		
+																			// Text
+																			case WebSocketOpcode::TEXT:
 																				
-																				// Check if current message is JSON
-																				Json jsonMessage;
-																				if(jsonMessage.decode(*message) && jsonMessage.getType() == Json::Type::OBJECT) {
-																				
-																					// Check if message contains an index
-																					if(jsonMessage.getObjectValue().count("Index")) {
+																				{
+																					// Check if message is compressed
+																					if(*messageCompressed) {
 																					
-																						// Check if index is valid
-																						Json::Number integerComponent;
-																						if(jsonMessage.getObjectValue().at("Index")->getType() == Json::Type::NUMBER && jsonMessage.getObjectValue().at("Index")->getNumberValue() >= 0 && jsonMessage.getObjectValue().at("Index")->getNumberValue() <= MAXIMUM_SAFE_INTEGER && modf(jsonMessage.getObjectValue().at("Index")->getNumberValue(), &integerComponent) == 0) {
-																					
-																							// Get index
-																							const Json::Number &index = jsonMessage.getObjectValue().at("Index")->getNumberValue();
+																						// Append compressed message tail to end of the message
+																						message->insert(message->end(), WEBSOCKET_COMPRESSED_MESSAGE_TAIL.begin(), WEBSOCKET_COMPRESSED_MESSAGE_TAIL.end());
+																						
+																						// Check if inflating the message failed
+																						vector<uint8_t> decompressedMessage;
+																						if(!Common::inflate(decompressedMessage, vector<uint8_t>(message->begin(), message->end()))) {
+																						
+																							// Remove data from input
+																							evbuffer_drain(input, length);
 																							
-																							// Check if message contains a valid request
-																							if(jsonMessage.getObjectValue().count("Request") && jsonMessage.getObjectValue().at("Request")->getType() == Json::Type::STRING) {
+																							// Remove connection's buffer callbacks
+																							bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																							
+																							// Close connection
+																							evhttp_connection_free(connection);
+																							
+																							// Cancel all client's interactions
+																							clients->at(connection).cancelAllInteractions();
+																							
+																							// Remove connection from list of clients
+																							clients->erase(connection);
+																							
+																							// Return
+																							return;
+																						}
+																						
+																						// Set message to the decompressed message
+																						*message = string(decompressedMessage.begin(), decompressedMessage.end());
+																					}
 																					
-																								// Get JSON request
-																								const Json::String &jsonRequest = jsonMessage.getObjectValue().at("Request")->getStringValue();
+																					// Initialize response
+																					string response;
+																					
+																					// Check if message is JSON
+																					Json jsonMessage;
+																					if(jsonMessage.decode(*message) && jsonMessage.getType() == Json::Type::OBJECT) {
+																					
+																						// Check if message contains an index
+																						if(jsonMessage.getObjectValue().count("Index")) {
+																						
+																							// Check if index is valid
+																							Json::Number integerComponent;
+																							if(jsonMessage.getObjectValue().at("Index")->getType() == Json::Type::NUMBER && jsonMessage.getObjectValue().at("Index")->getNumberValue() >= 0 && jsonMessage.getObjectValue().at("Index")->getNumberValue() <= MAXIMUM_SAFE_INTEGER && modf(jsonMessage.getObjectValue().at("Index")->getNumberValue(), &integerComponent) == 0) {
+																						
+																								// Get index
+																								const Json::Number &index = jsonMessage.getObjectValue().at("Index")->getNumberValue();
 																								
-																								// Check if the message request is to create a URL
-																								if(jsonRequest == "Create URL") {
-																								
-																									// Initialize URL
-																									string url;
-																								
-																									// Loop until an unused URL is found
-																									while(true) {
+																								// Check if message contains a valid request
+																								if(jsonMessage.getObjectValue().count("Request") && jsonMessage.getObjectValue().at("Request")->getType() == Json::Type::STRING) {
+																						
+																									// Get JSON request
+																									const Json::String &jsonRequest = jsonMessage.getObjectValue().at("Request")->getStringValue();
 																									
-																										// Set URL to random URL
-																										url = getRandomUrl(*onionServiceAddress);
+																									// Check if the message request is to create a URL
+																									if(jsonRequest == "Create URL") {
+																									
+																										// Initialize URL
+																										string url;
+																									
+																										// Loop until an unused URL is found
+																										while(true) {
 																										
-																										// Initialize URL in use
-																										bool urlInUse = false;
-																										
-																										// Go through all URLs
-																										for(unordered_map<string, unordered_set<string>>::const_iterator i = urls->cbegin(); i != urls->cend(); ++i) {
-																										
-																											// Get session's URLs
-																											const unordered_set<string> &sessionsUrls = i->second;
+																											// Set URL to random URL
+																											url = getRandomUrl(*onionServiceAddress);
 																											
-																											// Check if URL already exists
-																											if(sessionsUrls.count(url)) {
+																											// Initialize URL in use
+																											bool urlInUse = false;
 																											
-																												// Set URL in use
-																												urlInUse = true;
+																											// Go through all URLs
+																											for(unordered_map<string, unordered_set<string>>::const_iterator i = urls->cbegin(); i != urls->cend(); ++i) {
 																											
-																												// Break
-																												break;
-																											}
-																										}
-																										
-																										// Check if URL isn't in use
-																										if(!urlInUse) {
-																										
-																											// Break
-																											break;
-																										}
-																									}
-																									
-																									// Get session's URLs
-																									unordered_set<string> &sessionsUrls = urls->at(clients->at(connection).getSessionId());
-																									
-																									// Add URL to list of session's URLs
-																									sessionsUrls.emplace(url);
-																									
-																									// Set response
-																									response = Json(Json::Object{
-																										{"Index", make_unique<Json>(index)},
-																										{"Response", make_unique<Json>(url)}
-																									}).encode();
-																								}
-																								
-																								// Otherwise check if message request is to change a URL
-																								else if(jsonRequest == "Change URL") {
-																								
-																									// Check if URL isn't provided or is invalid
-																									if(!jsonMessage.getObjectValue().count("URL") || jsonMessage.getObjectValue().at("URL")->getType() != Json::Type::STRING) {
-																									
-																										// Set response
-																										response = Json(Json::Object{
-																											{"Index", make_unique<Json>(index)},
-																											{"Error", make_unique<Json>(jsonMessage.getObjectValue().count("URL") ? "Invalid URL parameter" : "Missing URL parameter")}
-																										}).encode();
-																									}
-																									
-																									// Otherwise
-																									else {
-																									
-																										// Get old URL
-																										const Json::String oldUrl = Common::toLowerCase(jsonMessage.getObjectValue().at("URL")->getStringValue());
-																										
-																										// Get session's URLs
-																										unordered_set<string> &sessionsUrls = urls->at(clients->at(connection).getSessionId());
-																										
-																										// Check if session owns the old URL
-																										if(sessionsUrls.count(oldUrl)) {
-																										
-																											// Initialize URL
-																											string url;
-																										
-																											// Loop until an unused URL is found
-																											while(true) {
-																											
-																												// Set URL to random URL
-																												url = getRandomUrl(*onionServiceAddress);
+																												// Get session's URLs
+																												const unordered_set<string> &sessionsUrls = i->second;
 																												
-																												// Initialize URL in use
-																												bool urlInUse = false;
+																												// Check if URL already exists
+																												if(sessionsUrls.count(url)) {
 																												
-																												// Go through all URLs
-																												for(unordered_map<string, unordered_set<string>>::const_iterator i = urls->cbegin(); i != urls->cend(); ++i) {
-																												
-																													// Get session's URLs
-																													const unordered_set<string> &sessionsUrls = i->second;
-																													
-																													// Check if URL already exists
-																													if(sessionsUrls.count(url)) {
-																													
-																														// Set URL in use
-																														urlInUse = true;
-																													
-																														// Break
-																														break;
-																													}
-																												}
-																												
-																												// Check if URL isn't in use
-																												if(!urlInUse) {
+																													// Set URL in use
+																													urlInUse = true;
 																												
 																													// Break
 																													break;
 																												}
 																											}
 																											
-																											// Remove old URL from list of session's URLs
-																											sessionsUrls.erase(oldUrl);
+																											// Check if URL isn't in use
+																											if(!urlInUse) {
 																											
-																											// Add URL to list of session's URLs
-																											sessionsUrls.emplace(url);
-																											
-																											// Set response
-																											response = Json(Json::Object{
-																												{"Index", make_unique<Json>(index)},
-																												{"Response", make_unique<Json>(url)}
-																											}).encode();
+																												// Break
+																												break;
+																											}
 																										}
 																										
-																										// Otherwis
-																										else {
-																										
-																											// Set response
-																											response = Json(Json::Object{
-																												{"Index", make_unique<Json>(index)},
-																												{"Error", make_unique<Json>("URL doesn't exist or it isn't owned by your session ID")}
-																											}).encode();
-																										}
-																									}
-																								}
-																								
-																								// Otherwise check if the message request is to delete a URL
-																								else if(jsonRequest == "Delete URL") {
-																								
-																									// Check if URL isn't provided or is invalid
-																									if(!jsonMessage.getObjectValue().count("URL") || jsonMessage.getObjectValue().at("URL")->getType() != Json::Type::STRING) {
-																									
-																										// Set response
-																										response = Json(Json::Object{
-																											{"Index", make_unique<Json>(index)},
-																											{"Error", make_unique<Json>(jsonMessage.getObjectValue().count("URL") ? "Invalid URL parameter" : "Missing URL parameter")}
-																										}).encode();
-																									}
-																									
-																									// Otherwise
-																									else {
-																									
-																										// Get URL
-																										const Json::String url = Common::toLowerCase(jsonMessage.getObjectValue().at("URL")->getStringValue());
-																								
 																										// Get session's URLs
 																										unordered_set<string> &sessionsUrls = urls->at(clients->at(connection).getSessionId());
 																										
-																										// Check if session owns the URL
-																										if(sessionsUrls.count(url)) {
+																										// Add URL to list of session's URLs
+																										sessionsUrls.emplace(url);
 																										
-																											// Delete URL
-																											sessionsUrls.erase(url);
+																										// Set response
+																										response = Json(Json::Object{
+																											{"Index", make_unique<Json>(index)},
+																											{"Response", make_unique<Json>(url)}
+																										}).encode();
+																									}
+																									
+																									// Otherwise check if message request is to change a URL
+																									else if(jsonRequest == "Change URL") {
+																									
+																										// Check if URL isn't provided or is invalid
+																										if(!jsonMessage.getObjectValue().count("URL") || jsonMessage.getObjectValue().at("URL")->getType() != Json::Type::STRING) {
 																										
 																											// Set response
 																											response = Json(Json::Object{
 																												{"Index", make_unique<Json>(index)},
-																												{"Response", make_unique<Json>(true)}
+																												{"Error", make_unique<Json>(jsonMessage.getObjectValue().count("URL") ? "Invalid URL parameter" : "Missing URL parameter")}
 																											}).encode();
 																										}
 																										
 																										// Otherwise
 																										else {
 																										
+																											// Get old URL
+																											const Json::String oldUrl = Common::toLowerCase(jsonMessage.getObjectValue().at("URL")->getStringValue());
+																											
+																											// Get session's URLs
+																											unordered_set<string> &sessionsUrls = urls->at(clients->at(connection).getSessionId());
+																											
+																											// Check if session owns the old URL
+																											if(sessionsUrls.count(oldUrl)) {
+																											
+																												// Initialize URL
+																												string url;
+																											
+																												// Loop until an unused URL is found
+																												while(true) {
+																												
+																													// Set URL to random URL
+																													url = getRandomUrl(*onionServiceAddress);
+																													
+																													// Initialize URL in use
+																													bool urlInUse = false;
+																													
+																													// Go through all URLs
+																													for(unordered_map<string, unordered_set<string>>::const_iterator i = urls->cbegin(); i != urls->cend(); ++i) {
+																													
+																														// Get session's URLs
+																														const unordered_set<string> &sessionsUrls = i->second;
+																														
+																														// Check if URL already exists
+																														if(sessionsUrls.count(url)) {
+																														
+																															// Set URL in use
+																															urlInUse = true;
+																														
+																															// Break
+																															break;
+																														}
+																													}
+																													
+																													// Check if URL isn't in use
+																													if(!urlInUse) {
+																													
+																														// Break
+																														break;
+																													}
+																												}
+																												
+																												// Remove old URL from list of session's URLs
+																												sessionsUrls.erase(oldUrl);
+																												
+																												// Add URL to list of session's URLs
+																												sessionsUrls.emplace(url);
+																												
+																												// Set response
+																												response = Json(Json::Object{
+																													{"Index", make_unique<Json>(index)},
+																													{"Response", make_unique<Json>(url)}
+																												}).encode();
+																											}
+																											
+																											// Otherwis
+																											else {
+																											
+																												// Set response
+																												response = Json(Json::Object{
+																													{"Index", make_unique<Json>(index)},
+																													{"Error", make_unique<Json>("URL doesn't exist or it isn't owned by your session ID")}
+																												}).encode();
+																											}
+																										}
+																									}
+																									
+																									// Otherwise check if the message request is to delete a URL
+																									else if(jsonRequest == "Delete URL") {
+																									
+																										// Check if URL isn't provided or is invalid
+																										if(!jsonMessage.getObjectValue().count("URL") || jsonMessage.getObjectValue().at("URL")->getType() != Json::Type::STRING) {
+																										
 																											// Set response
 																											response = Json(Json::Object{
 																												{"Index", make_unique<Json>(index)},
-																												{"Error", make_unique<Json>("URL doesn't exist or it isn't owned by your session ID")}
+																												{"Error", make_unique<Json>(jsonMessage.getObjectValue().count("URL") ? "Invalid URL parameter" : "Missing URL parameter")}
 																											}).encode();
 																										}
-																									}
-																								}
-																								
-																								// Otherwise check if message request is to check if they own a URL
-																								else if(jsonRequest == "Own URL") {
-																								
-																									// Check if URL isn't provided or is invalid
-																									if(!jsonMessage.getObjectValue().count("URL") || jsonMessage.getObjectValue().at("URL")->getType() != Json::Type::STRING) {
+																										
+																										// Otherwise
+																										else {
+																										
+																											// Get URL
+																											const Json::String url = Common::toLowerCase(jsonMessage.getObjectValue().at("URL")->getStringValue());
 																									
-																										// Set response
-																										response = Json(Json::Object{
-																											{"Index", make_unique<Json>(index)},
-																											{"Error", make_unique<Json>(jsonMessage.getObjectValue().count("URL") ? "Invalid URL parameter" : "Missing URL parameter")}
-																										}).encode();
+																											// Get session's URLs
+																											unordered_set<string> &sessionsUrls = urls->at(clients->at(connection).getSessionId());
+																											
+																											// Check if session owns the URL
+																											if(sessionsUrls.count(url)) {
+																											
+																												// Delete URL
+																												sessionsUrls.erase(url);
+																											
+																												// Set response
+																												response = Json(Json::Object{
+																													{"Index", make_unique<Json>(index)},
+																													{"Response", make_unique<Json>(true)}
+																												}).encode();
+																											}
+																											
+																											// Otherwise
+																											else {
+																											
+																												// Set response
+																												response = Json(Json::Object{
+																													{"Index", make_unique<Json>(index)},
+																													{"Error", make_unique<Json>("URL doesn't exist or it isn't owned by your session ID")}
+																												}).encode();
+																											}
+																										}
+																									}
+																									
+																									// Otherwise check if message request is to check if they own a URL
+																									else if(jsonRequest == "Own URL") {
+																									
+																										// Check if URL isn't provided or is invalid
+																										if(!jsonMessage.getObjectValue().count("URL") || jsonMessage.getObjectValue().at("URL")->getType() != Json::Type::STRING) {
+																										
+																											// Set response
+																											response = Json(Json::Object{
+																												{"Index", make_unique<Json>(index)},
+																												{"Error", make_unique<Json>(jsonMessage.getObjectValue().count("URL") ? "Invalid URL parameter" : "Missing URL parameter")}
+																											}).encode();
+																										}
+																										
+																										// Otherwise
+																										else {
+																										
+																											// Get URL
+																											const Json::String url = Common::toLowerCase(jsonMessage.getObjectValue().at("URL")->getStringValue());
+																											
+																											// Get session's URLs
+																											const unordered_set<string> &sessionsUrls = urls->at(clients->at(connection).getSessionId());
+																											
+																											// Check if session owns the URL
+																											if(sessionsUrls.count(url)) {
+																											
+																												// Set response
+																												response = Json(Json::Object{
+																													{"Index", make_unique<Json>(index)},
+																													{"Response", make_unique<Json>(true)}
+																												}).encode();
+																											}
+																											
+																											// Otherwise
+																											else {
+																											
+																												// Set response
+																												response = Json(Json::Object{
+																													{"Index", make_unique<Json>(index)},
+																													{"Response", make_unique<Json>(false)}
+																												}).encode();
+																											}
+																										}
 																									}
 																									
 																									// Otherwise
 																									else {
 																									
-																										// Get URL
-																										const Json::String url = Common::toLowerCase(jsonMessage.getObjectValue().at("URL")->getStringValue());
-																										
-																										// Get session's URLs
-																										const unordered_set<string> &sessionsUrls = urls->at(clients->at(connection).getSessionId());
-																										
-																										// Check if session owns the URL
-																										if(sessionsUrls.count(url)) {
-																										
-																											// Set response
-																											response = Json(Json::Object{
-																												{"Index", make_unique<Json>(index)},
-																												{"Response", make_unique<Json>(true)}
-																											}).encode();
-																										}
-																										
-																										// Otherwise
-																										else {
-																										
-																											// Set response
-																											response = Json(Json::Object{
-																												{"Index", make_unique<Json>(index)},
-																												{"Response", make_unique<Json>(false)}
-																											}).encode();
-																										}
+																										// Set response
+																										response = Json(Json::Object{
+																											{"Index", make_unique<Json>(index)},
+																											{"Error", make_unique<Json>("Unknown request")}
+																										}).encode();
 																									}
 																								}
 																								
@@ -1755,7 +1905,7 @@ int main(int argc, char *argv[]) {
 																									// Set response
 																									response = Json(Json::Object{
 																										{"Index", make_unique<Json>(index)},
-																										{"Error", make_unique<Json>("Unknown request")}
+																										{"Error", make_unique<Json>(jsonMessage.getObjectValue().count("Request") ? "Invalid request parameter" : "Missing request parameter")}
 																									}).encode();
 																								}
 																							}
@@ -1765,102 +1915,71 @@ int main(int argc, char *argv[]) {
 																							
 																								// Set response
 																								response = Json(Json::Object{
-																									{"Index", make_unique<Json>(index)},
-																									{"Error", make_unique<Json>(jsonMessage.getObjectValue().count("Request") ? "Invalid request parameter" : "Missing request parameter")}
+																									{"Error", make_unique<Json>("Invalid index parameter")}
 																								}).encode();
 																							}
 																						}
 																						
-																						// Otherwise
-																						else {
+																						// Otherwise check if message contains a interaction
+																						else if(jsonMessage.getObjectValue().count("Interaction")) {
 																						
-																							// Set response
-																							response = Json(Json::Object{
-																								{"Error", make_unique<Json>("Invalid index parameter")}
-																							}).encode();
-																						}
-																					}
-																					
-																					// Otherwise check if message contains a interaction
-																					else if(jsonMessage.getObjectValue().count("Interaction")) {
-																					
-																						// Check if interaction is valid
-																						Json::Number integerComponent;
-																						if(jsonMessage.getObjectValue().at("Interaction")->getType() == Json::Type::NUMBER && jsonMessage.getObjectValue().at("Interaction")->getNumberValue() >= 0 && jsonMessage.getObjectValue().at("Interaction")->getNumberValue() <= MAXIMUM_SAFE_INTEGER && modf(jsonMessage.getObjectValue().at("Interaction")->getNumberValue(), &integerComponent) == 0) {
-																						
-																							// Get interaction index
-																							const Json::Number &interactionIndex = jsonMessage.getObjectValue().at("Interaction")->getNumberValue();
+																							// Check if interaction is valid
+																							Json::Number integerComponent;
+																							if(jsonMessage.getObjectValue().at("Interaction")->getType() == Json::Type::NUMBER && jsonMessage.getObjectValue().at("Interaction")->getNumberValue() >= 0 && jsonMessage.getObjectValue().at("Interaction")->getNumberValue() <= MAXIMUM_SAFE_INTEGER && modf(jsonMessage.getObjectValue().at("Interaction")->getNumberValue(), &integerComponent) == 0) {
 																							
-																							// Check if interaction currently exists
-																							evhttp_request *request = clients->at(connection).getInteraction(interactionIndex);
-																							if(request) {
-																							
-																								// Remove interaction from client
-																								clients->at(connection).removeInteraction(interactionIndex);
-																							
-																								// Check if message contains valid data
-																								if(jsonMessage.getObjectValue().count("Data") && jsonMessage.getObjectValue().at("Data")->getType() == Json::Type::STRING) {
+																								// Get interaction index
+																								const Json::Number &interactionIndex = jsonMessage.getObjectValue().at("Interaction")->getNumberValue();
 																								
-																									// Get data
-																									const Json::String &data = jsonMessage.getObjectValue().at("Data")->getStringValue();
+																								// Check if interaction currently exists
+																								evhttp_request *request = clients->at(connection).getInteraction(interactionIndex);
+																								if(request) {
+																								
+																									// Remove interaction from client
+																									clients->at(connection).removeInteraction(interactionIndex);
+																								
+																									// Check if message contains valid data
+																									if(jsonMessage.getObjectValue().count("Data") && jsonMessage.getObjectValue().at("Data")->getType() == Json::Type::STRING) {
 																									
-																									// Try
-																									bool invalidData = false;
-																									vector<uint8_t> decodedData;
-																									try {
-																									
-																										// Decode data
-																										decodedData = data.empty() ? URL_DOESNT_EXIST : Json::base64Decode(data);
-																									}
-																									
-																									// Catch errors
-																									catch(...) {
-																									
-																										// Set invalid data
-																										invalidData = true;
-																									}
-																									
-																									// Check if data is invalid
-																									if(invalidData) {
-																									
-																										// Set response
-																										response = Json(Json::Object{
-																											{"Interaction", make_unique<Json>(interactionIndex)},
-																											{"Error", make_unique<Json>("Invalid data parameter")}
-																										}).encode();
-																									}
-																									
-																									// Otherwise
-																									else {
-																									
-																										// Get request's buffer
-																										bufferevent *requestsBuffer = evhttp_connection_get_bufferevent(evhttp_request_get_connection(request));
-																									
-																										// Set type to provided type otherwise HTML if not provided
-																										const string type = (jsonMessage.getObjectValue().count("Type") && jsonMessage.getObjectValue().at("Type")->getType() == Json::Type::STRING) ? jsonMessage.getObjectValue().at("Type")->getStringValue() : "text/html";
+																										// Get data
+																										const Json::String &data = jsonMessage.getObjectValue().at("Data")->getStringValue();
 																										
-																										// Check if setting request's content type failed
-																										if(!decodedData.empty() && evhttp_add_header(evhttp_request_get_output_headers(request), "Content-Type", type.c_str())) {
+																										// Try
+																										bool invalidData = false;
+																										vector<uint8_t> decodedData;
+																										try {
 																										
-																											// Reply with internal server error to request
-																											evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
-																											
-																											// Remove request's buffer callbacks
-																											bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
-																											
+																											// Decode data
+																											decodedData = data.empty() ? URL_DOESNT_EXIST : Json::base64Decode(data);
+																										}
+																										
+																										// Catch errors
+																										catch(...) {
+																										
+																											// Set invalid data
+																											invalidData = true;
+																										}
+																										
+																										// Check if data is invalid
+																										if(invalidData) {
+																										
 																											// Set response
 																											response = Json(Json::Object{
 																												{"Interaction", make_unique<Json>(interactionIndex)},
-																												{"Status", make_unique<Json>("Failed")}
+																												{"Error", make_unique<Json>("Invalid data parameter")}
 																											}).encode();
 																										}
 																										
 																										// Otherwise
 																										else {
 																										
-																											// Check if creating request's buffer callbacks argument failed
-																											unique_ptr<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number>> requestsBufferCallbacksArgument = make_unique<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number>>(connection, clients, interactionIndex);
-																											if(!connectionsBufferCallbacksArgument) {
+																											// Get request's buffer
+																											bufferevent *requestsBuffer = evhttp_connection_get_bufferevent(evhttp_request_get_connection(request));
+																										
+																											// Set type to provided type otherwise HTML if not provided
+																											const string type = (jsonMessage.getObjectValue().count("Type") && jsonMessage.getObjectValue().at("Type")->getType() == Json::Type::STRING) ? jsonMessage.getObjectValue().at("Type")->getStringValue() : "text/html";
+																											
+																											// Check if setting request's content type failed
+																											if(!decodedData.empty() && evhttp_add_header(evhttp_request_get_output_headers(request), "Content-Type", type.c_str())) {
 																											
 																												// Reply with internal server error to request
 																												evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -1878,25 +1997,9 @@ int main(int argc, char *argv[]) {
 																											// Otherwise
 																											else {
 																											
-																												// Check if creating buffer failed
-																												unique_ptr<evbuffer, decltype(&evbuffer_free)> buffer(evbuffer_new(), evbuffer_free);
-																												if(!buffer) {
-																												
-																													// Reply with internal server error to request
-																													evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
-																													
-																													// Remove request's buffer callbacks
-																													bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
-																													
-																													// Set response
-																													response = Json(Json::Object{
-																														{"Interaction", make_unique<Json>(interactionIndex)},
-																														{"Status", make_unique<Json>("Failed")}
-																													}).encode();
-																												}
-																											
-																												// Otherwise check if adding decoded data to buffer failed
-																												else if(evbuffer_add(buffer.get(), decodedData.data(), decodedData.size())) {
+																												// Check if creating request's buffer callbacks argument failed
+																												unique_ptr<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number>> requestsBufferCallbacksArgument = make_unique<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number>>(connection, clients, interactionIndex);
+																												if(!requestsBufferCallbacksArgument) {
 																												
 																													// Reply with internal server error to request
 																													evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -1914,164 +2017,323 @@ int main(int argc, char *argv[]) {
 																												// Otherwise
 																												else {
 																												
-																													// Set status to provided status otherwise ok if not provided
-																													const int status = (jsonMessage.getObjectValue().count("Status") && jsonMessage.getObjectValue().at("Status")->getType() == Json::Type::NUMBER && jsonMessage.getObjectValue().at("Status")->getNumberValue() >= 0 && jsonMessage.getObjectValue().at("Status")->getNumberValue() <= INT_MAX && modf(jsonMessage.getObjectValue().at("Status")->getNumberValue(), &integerComponent) == 0) ? jsonMessage.getObjectValue().at("Status")->getNumberValue() : HTTP_OK;
+																													// Check if creating buffer failed
+																													unique_ptr<evbuffer, decltype(&evbuffer_free)> buffer(evbuffer_new(), evbuffer_free);
+																													if(!buffer) {
 																													
-																													// Reply with status to request
-																													evhttp_send_reply(request, status, nullptr, buffer.get());
-																													
-																													// Set request's buffer callbacks
-																													bufferevent_setcb(requestsBuffer, nullptr, ([](bufferevent *requestsBuffer, void *argument) {
-																													
-																														// Get request's buffer callbacks argument from argument
-																														unique_ptr<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number>> requestsBufferCallbacksArgument(reinterpret_cast<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number> *>(argument));
+																														// Reply with internal server error to request
+																														evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
 																														
-																														// Get connection from request's buffer callbacks argument
-																														evhttp_connection *connection = get<0>(*requestsBufferCallbacksArgument);
-																														
-																														// Get clients from request's buffer callbacks argument
-																														unordered_map<evhttp_connection *, Client> *clients = get<1>(*requestsBufferCallbacksArgument);
-																														
-																														// Get interaction index from request's buffer callbacks argument
-																														const Json::Number interactionIndex = get<2>(*requestsBufferCallbacksArgument);
-																													
 																														// Remove request's buffer callbacks
 																														bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
 																														
-																														// Check if connection still exists
-																														if(clients->count(connection)) {
+																														// Set response
+																														response = Json(Json::Object{
+																															{"Interaction", make_unique<Json>(interactionIndex)},
+																															{"Status", make_unique<Json>("Failed")}
+																														}).encode();
+																													}
+																													
+																													// Otherwise
+																													else {
+																													
+																														// Initialize compress
+																														bool compress = false;
 																														
-																															// Check if getting connection's buffer failed
-																															bufferevent *connectionsBuffer = evhttp_connection_get_bufferevent(connection);
-																															if(!connectionsBuffer) {
+																														// Check if decoded data is large enough to compress
+																														if(decodedData.size() >= MINIMUM_COMPRESSION_LENGTH) {
+																													
+																															// Check if request contains an accept encoding header
+																															const char *acceptEncoding = evhttp_find_header(evhttp_request_get_input_headers(request), "Accept-Encoding");
+																															if(acceptEncoding) {
 																															
-																																// Close connection
-																																evhttp_connection_free(connection);
-																																
-																																// Cancel all client's interactions
-																																clients->at(connection).cancelAllInteractions();
-																																
-																																// Remove connection from list of clients
-																																clients->erase(connection);
-																															}
+																																// Get encodings
+																																const string encodings = acceptEncoding;
 																															
-																															// Otherwise
-																															else {
-																															
-																																// Set response
-																																const string response = Json(Json::Object{
-																																	{"Interaction", make_unique<Json>(interactionIndex)},
-																																	{"Status", make_unique<Json>("Succeeded")}
-																																}).encode();
-																															
-																																// Get response message
-																																const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT);
+																																// Go through all encodings
+																																for(string::size_type startOfEncodings = 0, endOfEncodings = encodings.find(',', startOfEncodings);; startOfEncodings = endOfEncodings + sizeof(','), endOfEncodings = encodings.find(',', startOfEncodings)) {
 																																
-																																// Check if sending response message to client failed
-																																if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
-																																
-																																	// Check if getting connection's buffer input was successful
-																																	evbuffer *input = bufferevent_get_input(connectionsBuffer);
-																																	if(input) {
+																																	// Get encoding
+																																	const string encoding = Common::trim(encodings.substr(startOfEncodings, (endOfEncodings != string::npos) ? endOfEncodings - startOfEncodings : string::npos));
 																																	
-																																		// Remove data from input
-																																		evbuffer_drain(input, evbuffer_get_length(input));
+																																	// Check if encoding is gzip
+																																	if(encoding == "gzip") {
+																																	
+																																		// Set compress
+																																		compress = true;
+																																		
+																																		// Break
+																																		break;
 																																	}
 																																	
-																																	// Remove connection's buffer callbacks
-																																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																																	// Check if at the last encodings
+																																	if(endOfEncodings == string::npos) {
 																																	
-																																	// Close connection
-																																	evhttp_connection_free(connection);
-																																	
-																																	// Cancel all client's interactions
-																																	clients->at(connection).cancelAllInteractions();
-																																	
-																																	// Remove connection from list of clients
-																																	clients->erase(connection);
+																																		// Break
+																																		break;
+																																	}
 																																}
 																															}
 																														}
 																														
-																													}), ([](bufferevent *requestsBuffer, short event, void *argument) {
-																													
-																														// Get request's buffer callbacks argument from argument
-																														unique_ptr<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number>> requestsBufferCallbacksArgument(reinterpret_cast<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number> *>(argument));
+																														// Check if compressing
+																														if(compress) {
 																														
-																														// Get connection from request's buffer callbacks argument
-																														evhttp_connection *connection = get<0>(*requestsBufferCallbacksArgument);
-																														
-																														// Get clients from request's buffer callbacks argument
-																														unordered_map<evhttp_connection *, Client> *clients = get<1>(*requestsBufferCallbacksArgument);
-																														
-																														// Get interaction index from request's buffer callbacks argument
-																														const Json::Number interactionIndex = get<2>(*requestsBufferCallbacksArgument);
-																													
-																														// Remove request's buffer callbacks
-																														bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
-																														
-																														// Check if connection still exists
-																														if(clients->count(connection)) {
-																														
-																															// Check if getting connection's buffer failed
-																															bufferevent *connectionsBuffer = evhttp_connection_get_bufferevent(connection);
-																															if(!connectionsBuffer) {
+																															// Check if setting request's content encoding or vary failed
+																															if(evhttp_add_header(evhttp_request_get_output_headers(request), "Content-Encoding", "gzip") || evhttp_add_header(evhttp_request_get_output_headers(request), "Vary", "Accept-Encoding")) {
 																															
-																																// Close connection
-																																evhttp_connection_free(connection);
+																																// Reply with internal server error to request
+																																evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
 																																
-																																// Cancel all client's interactions
-																																clients->at(connection).cancelAllInteractions();
+																																// Remove request's buffer callbacks
+																																bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
 																																
-																																// Remove connection from list of clients
-																																clients->erase(connection);
-																															}
-																															
-																															// Otherwise
-																															else {
-																															
 																																// Set response
-																																const string response = Json(Json::Object{
+																																response = Json(Json::Object{
 																																	{"Interaction", make_unique<Json>(interactionIndex)},
 																																	{"Status", make_unique<Json>("Failed")}
 																																}).encode();
+																															}
 																															
-																																// Get response message
-																																const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT);
+																															// Otherwise
+																															else {
+																														
+																																// Check if compressing decoded data failed
+																																vector<uint8_t> compressedData;
+																																if(!Common::gzip(compressedData, decodedData)) {
 																																
-																																// Check if sending response message to client failed
-																																if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
+																																	// Remove request's content encoding and vary headers
+																																	evhttp_remove_header(evhttp_request_get_output_headers(request), "Content-Encoding");
+																																	evhttp_remove_header(evhttp_request_get_output_headers(request), "Vary");
 																																
-																																	// Check if getting connection's buffer input was successful
-																																	evbuffer *input = bufferevent_get_input(connectionsBuffer);
-																																	if(input) {
+																																	// Reply with internal server error to request
+																																	evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
 																																	
-																																		// Remove data from input
-																																		evbuffer_drain(input, evbuffer_get_length(input));
-																																	}
+																																	// Remove request's buffer callbacks
+																																	bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
 																																	
-																																	// Remove connection's buffer callbacks
-																																	bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																																	// Set response
+																																	response = Json(Json::Object{
+																																		{"Interaction", make_unique<Json>(interactionIndex)},
+																																		{"Status", make_unique<Json>("Failed")}
+																																	}).encode();
+																																}
+																																
+																																// Otherwise check if adding compressed data to buffer failed
+																																else if(evbuffer_add(buffer.get(), compressedData.data(), compressedData.size())) {
+																																
+																																	// Remove request's content encoding and vary headers
+																																	evhttp_remove_header(evhttp_request_get_output_headers(request), "Content-Encoding");
+																																	evhttp_remove_header(evhttp_request_get_output_headers(request), "Vary");
+																																
+																																	// Reply with internal server error to request
+																																	evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
 																																	
-																																	// Close connection
-																																	evhttp_connection_free(connection);
+																																	// Remove request's buffer callbacks
+																																	bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
 																																	
-																																	// Cancel all client's interactions
-																																	clients->at(connection).cancelAllInteractions();
-																																	
-																																	// Remove connection from list of clients
-																																	clients->erase(connection);
+																																	// Set response
+																																	response = Json(Json::Object{
+																																		{"Interaction", make_unique<Json>(interactionIndex)},
+																																		{"Status", make_unique<Json>("Failed")}
+																																	}).encode();
 																																}
 																															}
 																														}
 																														
-																													}), requestsBufferCallbacksArgument.get());
-																													
-																													// Release request's callback argument
-																													requestsBufferCallbacksArgument.release();
+																														// Otherwise
+																														else {
+																												
+																															// Check if adding decoded data to buffer failed
+																															if(evbuffer_add(buffer.get(), decodedData.data(), decodedData.size())) {
+																															
+																																// Reply with internal server error to request
+																																evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
+																																
+																																// Remove request's buffer callbacks
+																																bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
+																																
+																																// Set response
+																																response = Json(Json::Object{
+																																	{"Interaction", make_unique<Json>(interactionIndex)},
+																																	{"Status", make_unique<Json>("Failed")}
+																																}).encode();
+																															}
+																														}
+																														
+																														// Check if response wasn't set
+																														if(response.empty()) {
+																														
+																															// Set status to provided status otherwise ok if not provided
+																															const int status = (jsonMessage.getObjectValue().count("Status") && jsonMessage.getObjectValue().at("Status")->getType() == Json::Type::NUMBER && jsonMessage.getObjectValue().at("Status")->getNumberValue() >= 0 && jsonMessage.getObjectValue().at("Status")->getNumberValue() <= INT_MAX && modf(jsonMessage.getObjectValue().at("Status")->getNumberValue(), &integerComponent) == 0) ? jsonMessage.getObjectValue().at("Status")->getNumberValue() : HTTP_OK;
+																															
+																															// Reply with status to request
+																															evhttp_send_reply(request, status, nullptr, buffer.get());
+																															
+																															// Set request's buffer callbacks
+																															bufferevent_setcb(requestsBuffer, nullptr, ([](bufferevent *requestsBuffer, void *argument) {
+																															
+																																// Get request's buffer callbacks argument from argument
+																																unique_ptr<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number>> requestsBufferCallbacksArgument(reinterpret_cast<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number> *>(argument));
+																																
+																																// Get connection from request's buffer callbacks argument
+																																evhttp_connection *connection = get<0>(*requestsBufferCallbacksArgument);
+																																
+																																// Get clients from request's buffer callbacks argument
+																																unordered_map<evhttp_connection *, Client> *clients = get<1>(*requestsBufferCallbacksArgument);
+																																
+																																// Get interaction index from request's buffer callbacks argument
+																																const Json::Number interactionIndex = get<2>(*requestsBufferCallbacksArgument);
+																															
+																																// Remove request's buffer callbacks
+																																bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
+																																
+																																// Check if connection still exists
+																																if(clients->count(connection)) {
+																																
+																																	// Check if getting connection's buffer failed
+																																	bufferevent *connectionsBuffer = evhttp_connection_get_bufferevent(connection);
+																																	if(!connectionsBuffer) {
+																																	
+																																		// Close connection
+																																		evhttp_connection_free(connection);
+																																		
+																																		// Cancel all client's interactions
+																																		clients->at(connection).cancelAllInteractions();
+																																		
+																																		// Remove connection from list of clients
+																																		clients->erase(connection);
+																																	}
+																																	
+																																	// Otherwise
+																																	else {
+																																	
+																																		// Set response
+																																		const string response = Json(Json::Object{
+																																			{"Interaction", make_unique<Json>(interactionIndex)},
+																																			{"Status", make_unique<Json>("Succeeded")}
+																																		}).encode();
+																																	
+																																		// Get response message
+																																		const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT, clients->at(connection).getSupportsCompression());
+																																		
+																																		// Check if sending response message to client failed
+																																		if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
+																																		
+																																			// Check if getting connection's buffer input was successful
+																																			evbuffer *input = bufferevent_get_input(connectionsBuffer);
+																																			if(input) {
+																																			
+																																				// Remove data from input
+																																				evbuffer_drain(input, evbuffer_get_length(input));
+																																			}
+																																			
+																																			// Remove connection's buffer callbacks
+																																			bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																																			
+																																			// Close connection
+																																			evhttp_connection_free(connection);
+																																			
+																																			// Cancel all client's interactions
+																																			clients->at(connection).cancelAllInteractions();
+																																			
+																																			// Remove connection from list of clients
+																																			clients->erase(connection);
+																																		}
+																																	}
+																																}
+																																
+																															}), ([](bufferevent *requestsBuffer, short event, void *argument) {
+																															
+																																// Get request's buffer callbacks argument from argument
+																																unique_ptr<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number>> requestsBufferCallbacksArgument(reinterpret_cast<tuple<evhttp_connection *, unordered_map<evhttp_connection *, Client> *, const Json::Number> *>(argument));
+																																
+																																// Get connection from request's buffer callbacks argument
+																																evhttp_connection *connection = get<0>(*requestsBufferCallbacksArgument);
+																																
+																																// Get clients from request's buffer callbacks argument
+																																unordered_map<evhttp_connection *, Client> *clients = get<1>(*requestsBufferCallbacksArgument);
+																																
+																																// Get interaction index from request's buffer callbacks argument
+																																const Json::Number interactionIndex = get<2>(*requestsBufferCallbacksArgument);
+																															
+																																// Remove request's buffer callbacks
+																																bufferevent_setcb(requestsBuffer, nullptr, nullptr, nullptr, nullptr);
+																																
+																																// Check if connection still exists
+																																if(clients->count(connection)) {
+																																
+																																	// Check if getting connection's buffer failed
+																																	bufferevent *connectionsBuffer = evhttp_connection_get_bufferevent(connection);
+																																	if(!connectionsBuffer) {
+																																	
+																																		// Close connection
+																																		evhttp_connection_free(connection);
+																																		
+																																		// Cancel all client's interactions
+																																		clients->at(connection).cancelAllInteractions();
+																																		
+																																		// Remove connection from list of clients
+																																		clients->erase(connection);
+																																	}
+																																	
+																																	// Otherwise
+																																	else {
+																																	
+																																		// Set response
+																																		const string response = Json(Json::Object{
+																																			{"Interaction", make_unique<Json>(interactionIndex)},
+																																			{"Status", make_unique<Json>("Failed")}
+																																		}).encode();
+																																	
+																																		// Get response message
+																																		const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT, clients->at(connection).getSupportsCompression());
+																																		
+																																		// Check if sending response message to client failed
+																																		if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
+																																		
+																																			// Check if getting connection's buffer input was successful
+																																			evbuffer *input = bufferevent_get_input(connectionsBuffer);
+																																			if(input) {
+																																			
+																																				// Remove data from input
+																																				evbuffer_drain(input, evbuffer_get_length(input));
+																																			}
+																																			
+																																			// Remove connection's buffer callbacks
+																																			bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																																			
+																																			// Close connection
+																																			evhttp_connection_free(connection);
+																																			
+																																			// Cancel all client's interactions
+																																			clients->at(connection).cancelAllInteractions();
+																																			
+																																			// Remove connection from list of clients
+																																			clients->erase(connection);
+																																		}
+																																	}
+																																}
+																																
+																															}), requestsBufferCallbacksArgument.get());
+																															
+																															// Release request's callback argument
+																															requestsBufferCallbacksArgument.release();
+																														}
+																													}
 																												}
 																											}
 																										}
+																									}
+																									
+																									// Otherwise
+																									else {
+																									
+																										// Set response
+																										response = Json(Json::Object{
+																											{"Interaction", make_unique<Json>(interactionIndex)},
+																											{"Error", make_unique<Json>((jsonMessage.getObjectValue().count("Data") && jsonMessage.getObjectValue().at("Data")->getType() != Json::Type::STRING) ? "Invalid data parameter" : "Missing data parameter")}
+																										}).encode();
 																									}
 																								}
 																								
@@ -2081,7 +2343,7 @@ int main(int argc, char *argv[]) {
 																									// Set response
 																									response = Json(Json::Object{
 																										{"Interaction", make_unique<Json>(interactionIndex)},
-																										{"Error", make_unique<Json>((jsonMessage.getObjectValue().count("Data") && jsonMessage.getObjectValue().at("Data")->getType() != Json::Type::STRING) ? "Invalid data parameter" : "Missing data parameter")}
+																										{"Error", make_unique<Json>("Interaction doesn't exist or it was already processed")}
 																									}).encode();
 																								}
 																							}
@@ -2091,8 +2353,7 @@ int main(int argc, char *argv[]) {
 																							
 																								// Set response
 																								response = Json(Json::Object{
-																									{"Interaction", make_unique<Json>(interactionIndex)},
-																									{"Error", make_unique<Json>("Interaction doesn't exist or it was already processed")}
+																									{"Error", make_unique<Json>("Invalid interaction parameter")}
 																								}).encode();
 																							}
 																						}
@@ -2102,7 +2363,7 @@ int main(int argc, char *argv[]) {
 																						
 																							// Set response
 																							response = Json(Json::Object{
-																								{"Error", make_unique<Json>("Invalid interaction parameter")}
+																								{"Error", make_unique<Json>("Unknown message type")}
 																							}).encode();
 																						}
 																					}
@@ -2112,28 +2373,79 @@ int main(int argc, char *argv[]) {
 																					
 																						// Set response
 																						response = Json(Json::Object{
-																							{"Error", make_unique<Json>("Unknown message type")}
+																							{"Error", make_unique<Json>("Message is not JSON")}
 																						}).encode();
 																					}
-																				}
-																				
-																				// Otherwise
-																				else {
-																				
-																					// Set response
-																					response = Json(Json::Object{
-																						{"Error", make_unique<Json>("Message is not JSON")}
-																					}).encode();
-																				}
-																				
-																				// Check if response exists
-																				if(!response.empty()) {
-																				
-																					// Get response message
-																					const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT);
 																					
-																					// Check if sending response message to client failed
-																					if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
+																					// Check if response exists
+																					if(!response.empty()) {
+																					
+																						// Try
+																						vector<uint8_t> responseMessage;
+																						try {
+																					
+																							// Get response message
+																							responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT, clients->at(connection).getSupportsCompression());
+																						}
+																						
+																						// Catch errors
+																						catch(...) {
+																						
+																							// Remove data from input
+																							evbuffer_drain(input, length);
+																							
+																							// Remove connection's buffer callbacks
+																							bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																							
+																							// Close connection
+																							evhttp_connection_free(connection);
+																							
+																							// Cancel all client's interactions
+																							clients->at(connection).cancelAllInteractions();
+																							
+																							// Remove connection from list of clients
+																							clients->erase(connection);
+																							
+																							// Return
+																							return;
+																						}
+																						
+																						// Check if sending response message to client failed
+																						if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
+																						
+																							// Remove data from input
+																							evbuffer_drain(input, length);
+																							
+																							// Remove connection's buffer callbacks
+																							bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+																							
+																							// Close connection
+																							evhttp_connection_free(connection);
+																							
+																							// Cancel all client's interactions
+																							clients->at(connection).cancelAllInteractions();
+																							
+																							// Remove connection from list of clients
+																							clients->erase(connection);
+																							
+																							// Return
+																							return;
+																						}
+																					}
+																				}
+																			
+																				// Break
+																				break;
+																			
+																			// Ping
+																			case WebSocketOpcode::PING:
+																			
+																				{
+																					// Get pong message
+																					const vector<uint8_t> pongMessage = createWebSocketResponse(*message, WebSocketOpcode::PONG, clients->at(connection).getSupportsCompression());
+																					
+																					// Check if sending pong message to client failed
+																					if(bufferevent_write(connectionsBuffer, pongMessage.data(), pongMessage.size())) {
 																					
 																						// Remove data from input
 																						evbuffer_drain(input, length);
@@ -2154,54 +2466,31 @@ int main(int argc, char *argv[]) {
 																						return;
 																					}
 																				}
-																			}
+																			
+																				// Break
+																				break;
+																			
+																			// Pong or default
+																			case WebSocketOpcode::PONG:
+																			default:
+																			
+																				// Break
+																				break;
+																		}
 																		
-																			// Break
-																			break;
+																		// Clear message
+																		message->clear();
 																		
-																		// Ping
-																		case WebSocketOpcode::PING:
-																		
-																			{
-																				// Get pong message
-																				const vector<uint8_t> pongMessage = createWebSocketResponse(*message, WebSocketOpcode::PONG);
-																				
-																				// Check if sending pong message to client failed
-																				if(bufferevent_write(connectionsBuffer, pongMessage.data(), pongMessage.size())) {
-																				
-																					// Remove data from input
-																					evbuffer_drain(input, length);
-																					
-																					// Remove connection's buffer callbacks
-																					bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-																					
-																					// Close connection
-																					evhttp_connection_free(connection);
-																					
-																					// Cancel all client's interactions
-																					clients->at(connection).cancelAllInteractions();
-																					
-																					// Remove connection from list of clients
-																					clients->erase(connection);
-																					
-																					// Return
-																					return;
-																				}
-																			}
-																		
-																			// Break
-																			break;
-																		
-																		// Pong or default
-																		case WebSocketOpcode::PONG:
-																		default:
-																		
-																			// Break
-																			break;
+																		// Clear message compressed
+																		*messageCompressed = false;
 																	}
-																	
-																	// Clear message
-																	message->clear();
+																}
+																
+																// Otherwise
+																else {
+																
+																	// break
+																	break;
 																}
 															}
 															
@@ -2216,73 +2505,75 @@ int main(int argc, char *argv[]) {
 														// Otherwise
 														else {
 														
-															// break
+															// Break
 															break;
 														}
 													}
 													
-													// Otherwise
-													else {
+													// Release message
+													message.release();
 													
-														// Break
-														break;
-													}
+													// Release message compressed
+													messageCompressed.release();
+													
+													// Release connection's buffer callbacsk argument
+													connectionsBufferCallbacksArgument.release();
 												}
-												
-												// Release message
-												message.release();
-												
-												// Release connection's buffer callbacsk argument
-												connectionsBufferCallbacksArgument.release();
 											}
 										}
-									}
-								
-								}), nullptr, ([](bufferevent *connectionsBuffer, short event, void *argument) {
-								
-									// Get connection's buffer callbacks argument from argument
-									unique_ptr<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *>> connectionsBufferCallbacksArgument(reinterpret_cast<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *>(argument));
 									
-									// Get connection from connection's buffer callbacks argument
-									evhttp_connection *connection = get<0>(*connectionsBufferCallbacksArgument);
+									}), nullptr, ([](bufferevent *connectionsBuffer, short event, void *argument) {
 									
-									// Get message from connection's buffer callbacks argument
-									unique_ptr<string> message(get<1>(*connectionsBufferCallbacksArgument));
-									
-									// Get clients from connection's buffer callbacks argument
-									unordered_map<evhttp_connection *, Client> *clients = get<3>(*connectionsBufferCallbacksArgument);
-									
-									// Check if getting connection's buffer input was successful
-									evbuffer *input = bufferevent_get_input(connectionsBuffer);
-									if(input) {
-									
-										// Remove data from input
-										evbuffer_drain(input, evbuffer_get_length(input));
-									}
-									
-									// Remove connection's buffer callbacks
-									bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
-									
-									// Check if connection still exists
-									if(clients->count(connection)) {
-									
-										// Close connection
-										evhttp_connection_free(connection);
+										// Get connection's buffer callbacks argument from argument
+										unique_ptr<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *, bool *>> connectionsBufferCallbacksArgument(reinterpret_cast<tuple<evhttp_connection *, string *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *, bool *> *>(argument));
 										
-										// Cancel all client's interactions
-										clients->at(connection).cancelAllInteractions();
+										// Get connection from connection's buffer callbacks argument
+										evhttp_connection *connection = get<0>(*connectionsBufferCallbacksArgument);
 										
-										// Remove connection from list of clients
-										clients->erase(connection);
-									}
+										// Get message from connection's buffer callbacks argument
+										unique_ptr<string> message(get<1>(*connectionsBufferCallbacksArgument));
+										
+										// Get clients from connection's buffer callbacks argument
+										unordered_map<evhttp_connection *, Client> *clients = get<3>(*connectionsBufferCallbacksArgument);
+										
+										// Get message compressed from connection's buffer callbacks argument
+										unique_ptr<bool> messageCompressed(get<5>(*connectionsBufferCallbacksArgument));
+										
+										// Check if getting connection's buffer input was successful
+										evbuffer *input = bufferevent_get_input(connectionsBuffer);
+										if(input) {
+										
+											// Remove data from input
+											evbuffer_drain(input, evbuffer_get_length(input));
+										}
+										
+										// Remove connection's buffer callbacks
+										bufferevent_setcb(connectionsBuffer, nullptr, nullptr, nullptr, nullptr);
+										
+										// Check if connection still exists
+										if(clients->count(connection)) {
+										
+											// Close connection
+											evhttp_connection_free(connection);
+											
+											// Cancel all client's interactions
+											clients->at(connection).cancelAllInteractions();
+											
+											// Remove connection from list of clients
+											clients->erase(connection);
+										}
+										
+									}), connectionsBufferCallbacksArgument.get());
 									
-								}), connectionsBufferCallbacksArgument.get());
-								
-								// Release message
-								message.release();
-								
-								// Release connection's buffer callbacsk argument
-								connectionsBufferCallbacksArgument.release();
+									// Release message
+									message.release();
+									
+									// Release message compressed
+									messageCompressed.release();
+									
+									// Release connection's buffer callbacsk argument
+									connectionsBufferCallbacksArgument.release();
+								}
 							}
 						}
 					}
@@ -2634,9 +2925,24 @@ int main(int argc, char *argv[]) {
 								{"Type", make_unique<Json>(contentType)},
 								{"Data", make_unique<Json>(data)}
 							}).encode();
+							
+							// Try
+							vector<uint8_t> responseMessage;
+							try {
 						
-							// Get response message
-							const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT);
+								// Get response message
+								responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT, clients->at(connection).getSupportsCompression());
+							}
+							
+							// Catch errors
+							catch(...) {
+							
+								// Reply with internal server error to request
+								evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
+								
+								// Return
+								return;
+							}
 							
 							// Check if sending response message to client failed
 							if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
@@ -2681,7 +2987,7 @@ int main(int argc, char *argv[]) {
 									}).encode();
 								
 									// Get response message
-									const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT);
+									const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT, clients->at(connection).getSupportsCompression());
 									
 									// Check if sending response message to client failed
 									if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
@@ -2728,7 +3034,7 @@ int main(int argc, char *argv[]) {
 										}).encode();
 									
 										// Get response message
-										const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT);
+										const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT, clients->at(connection).getSupportsCompression());
 										
 										// Check if sending response message to client failed
 										if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
@@ -2812,7 +3118,7 @@ int main(int argc, char *argv[]) {
 														}).encode();
 													
 														// Get response message
-														const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT);
+														const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT, clients->at(connection).getSupportsCompression());
 														
 														// Check if sending response message to client failed
 														if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
@@ -2862,7 +3168,7 @@ int main(int argc, char *argv[]) {
 											}).encode();
 										
 											// Get response message
-											const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT);
+											const vector<uint8_t> responseMessage = createWebSocketResponse(response, WebSocketOpcode::TEXT, clients->at(connection).getSupportsCompression());
 											
 											// Check if sending response message to client failed
 											if(bufferevent_write(connectionsBuffer, responseMessage.data(), responseMessage.size())) {
@@ -3551,22 +3857,50 @@ int main(int argc, char *argv[]) {
 // Supporting function implementation
 
 // Create WebSocket response
-const vector<uint8_t> createWebSocketResponse(const string &message, WebSocketOpcode opcode) {
+const vector<uint8_t> createWebSocketResponse(const string &message, WebSocketOpcode opcode, bool supportsCompression) {
 
 	// Initialize response
 	vector<uint8_t> response;
+	
+	// Initialize compressed message
+	vector<uint8_t> compressedMessage(message.begin(), message.end());
+	
+	// Initialize compress
+	bool compress = false;
+	
+	// Check if supports compression and message is large enough to compress
+	if(supportsCompression && message.size() >= MINIMUM_COMPRESSION_LENGTH) {
+	
+		// Check if opcode is text
+		if(opcode == WebSocketOpcode::TEXT) {
+		
+			// Check if deflating the message failed
+			compressedMessage.clear();
+			if(!Common::deflate(compressedMessage, vector<uint8_t>(message.begin(), message.end()))) {
+				
+				// Throw exception
+				throw runtime_error("Deflating the message failed");
+			}
+			
+			// Append BFINAL flag to compressed message
+			compressedMessage.push_back(Common::DEFLATE_BFINAL_FLAG);
+			
+			// Set compress
+			compress = true;
+		}
+	}
 	
 	// Go through all WebSocket response frames
 	for(string::size_type i = 0;;) {
 	
 		// Get if response is final frame
-		const bool isFinalFrame = message.length() - i <= INT64_MAX;
+		const bool isFinalFrame = compressedMessage.size() - i <= INT64_MAX;
 		
 		// Get frame length
-		const string::size_type frameLength = isFinalFrame ? message.length() - i : INT64_MAX;
+		const string::size_type frameLength = isFinalFrame ? compressedMessage.size() - i : INT64_MAX;
 		
-		// Append opcode and is final frame to the response
-		response.push_back(static_cast<uint8_t>(opcode) | (isFinalFrame ? WEBSOCKET_FINAL_FRAME_BYTE_MASK : 0));
+		// Append opcode, is final frame, and is compressed to the response
+		response.push_back(static_cast<uint8_t>(opcode) | (isFinalFrame ? WEBSOCKET_FINAL_FRAME_BYTE_MASK : 0) | ((opcode == WebSocketOpcode::TEXT && compress) ? WEBSOCKET_COMPRESSED_EXTENSION_BYTE_MASK : 0));
 		
 		// Check if frame's length requires sixty-three to express
 		if(frameLength > UINT16_MAX) {
@@ -3604,7 +3938,7 @@ const vector<uint8_t> createWebSocketResponse(const string &message, WebSocketOp
 		}
 		
 		// Append message to the response
-		response.insert(response.end(), message.begin() + i, message.begin() + i + frameLength);
+		response.insert(response.end(), compressedMessage.begin() + i, compressedMessage.begin() + i + frameLength);
 		
 		// Check if is final frame
 		if(isFinalFrame) {
