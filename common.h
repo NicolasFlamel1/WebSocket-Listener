@@ -86,6 +86,7 @@ class Common final {
 		static const uint8_t DEFLATE_BFINAL_FLAG;
 	
 	// Private
+	private:
 	
 		// Compress
 		static bool compress(vector<uint8_t> &output, const vector<uint8_t> &input, int windowBits);
@@ -104,6 +105,9 @@ class Common final {
 
 		// Gzip flag
 		static const int GZIP_FLAG;
+		
+		// Maximum decompress size
+		static const size_t MAXIMUM_DECOMPRESS_SIZE;
 };
 
 

@@ -44,7 +44,7 @@ const int Common::KILOBYTE_IN_A_MEGABYTE = Common::BYTES_IN_A_KILOBYTE;
 const uint8_t Common::DEFLATE_BFINAL_FLAG = 0x00;
 
 // Chunk size
-const size_t Common::CHUNK_SIZE = 1024;
+const size_t Common::CHUNK_SIZE = 1 * BYTES_IN_A_KILOBYTE;
 
 // Window bits
 const int Common::WINDOWS_BITS = MAX_WBITS;
@@ -54,6 +54,9 @@ const int Common::DEFLATE_SCALAR = -1;
 
 // Gzip flag
 const int Common::GZIP_FLAG = 0x10;
+
+// Maximum decompress size
+const size_t Common::MAXIMUM_DECOMPRESS_SIZE = 10 * KILOBYTE_IN_A_MEGABYTE * BYTES_IN_A_KILOBYTE;
 
 
 // Supporting function implementation
@@ -266,6 +269,16 @@ bool Common::decompress(vector<uint8_t> &output, const vector<uint8_t> &input, i
 			
 			// Append inflated chunk to output
 			output.insert(output.end(), chunk, chunk + sizeof(chunk) - stream.avail_out);
+			
+			// Check if output size is too large
+			if(output.size() > MAXIMUM_DECOMPRESS_SIZE) {
+			
+				// End stream
+				inflateEnd(&stream);
+				
+				// Return false
+				return false;
+			}
 		
 		} while(!stream.avail_out);
 	
