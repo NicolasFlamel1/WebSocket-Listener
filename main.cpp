@@ -2714,7 +2714,7 @@ int main(int argc, char *argv[]) {
 			evhttp_send_reply(request, HTTP_NOTFOUND, nullptr, nullptr);
 		}
 		
-	}), nullptr);
+	}), &httpServerRequestCallbackArgument);
 	
 	// Check if creating Tor server failed
 	unique_ptr<evhttp, decltype(&evhttp_free)> torServer(evhttp_new(eventBase.get()), evhttp_free);
