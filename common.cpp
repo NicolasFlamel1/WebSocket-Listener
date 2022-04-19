@@ -195,7 +195,7 @@ bool Common::compress(vector<uint8_t> &output, const vector<uint8_t> &input, int
 			stream.avail_out = sizeof(chunk);
 			stream.next_out = chunk;
 			
-			// Check if error occured while deflating chunk
+			// Check if error occurred while deflating chunk
 			result = ::deflate(&stream, Z_FINISH);
 			
 			if(result != Z_OK && result != Z_STREAM_END && result != Z_BUF_ERROR) {
@@ -255,7 +255,7 @@ bool Common::decompress(vector<uint8_t> &output, const vector<uint8_t> &input, i
 			stream.avail_out = sizeof(chunk);
 			stream.next_out = chunk;
 			
-			// Check if error occured while inflating chunk
+			// Check if error occurred while inflating chunk
 			result = ::inflate(&stream, Z_SYNC_FLUSH);
 			
 			if(result != Z_OK && result != Z_STREAM_END && result != Z_BUF_ERROR) {

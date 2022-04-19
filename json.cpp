@@ -1406,7 +1406,7 @@ bool Json::decode(const string &value, intmax_t maxDepth) {
 		standardValue = removeWhitespace(value);
 	}
 	
-	// Check if an exception occured
+	// Check if an exception occurred
 	catch(const runtime_error &error) {
 	
 		// Return false
@@ -2138,7 +2138,7 @@ bool Json::parseValue(const string &value, intmax_t currentDepth, intmax_t maxDe
 							key = unescape(value.substr(j + sizeof('"'), i - j - sizeof('"') * 2));
 						}
 						
-						// Check if an exception occured
+						// Check if an exception occurred
 						catch(const runtime_error &error) {
 						
 							// Return false
@@ -2435,7 +2435,7 @@ bool Json::parseValue(const string &value, intmax_t currentDepth, intmax_t maxDe
 			setStringValue(unescape(value.substr(sizeof('"'), value.length() - 1 - sizeof('"'))));
 		}
 		
-		// Check if an exception occured
+		// Check if an exception occurred
 		catch(const runtime_error &error) {
 		
 			// Return false
@@ -2465,7 +2465,7 @@ bool Json::parseValue(const string &value, intmax_t currentDepth, intmax_t maxDe
 			setNumberValue(stold(value, &offset));
 		}
 		
-		// Check if an exception occured
+		// Check if an exception occurred
 		catch(const runtime_error &error) {
 		
 			// Return false

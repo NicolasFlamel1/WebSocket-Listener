@@ -502,8 +502,8 @@ int main(int argc, char *argv[]) {
 					// Check if port is numeric
 					if(Common::isNumeric(port)) {
 					
-						// Initialize error occured
-						bool errorOccured = false;
+						// Initialize error occurred
+						bool errorOccurred = false;
 					
 						// Try
 						int portNumber;
@@ -516,12 +516,12 @@ int main(int argc, char *argv[]) {
 						// Catch errors
 						catch(...) {
 						
-							// Set error occured
-							errorOccured = true;
+							// Set error occurred
+							errorOccurred = true;
 						}
 						
 						// Check if an error didn't occurt
-						if(!errorOccured) {
+						if(!errorOccurred) {
 						
 							// Check if port number is valid
 							if(portNumber >= 1 && portNumber <= UINT16_MAX) {
@@ -947,7 +947,7 @@ int main(int argc, char *argv[]) {
 			}
 			
 			// Check if all required HTTP headers exists for a WebSocket connection
-			if(httpHeaders.count("connection") && Common::toLowerCase(httpHeaders.at("connection")) == "upgrade" && httpHeaders.count("upgrade") && Common::toLowerCase(httpHeaders.at("upgrade")) == "websocket" && httpHeaders.count("sec-websocket-key")) {
+			if(httpHeaders.count("connection") && Common::toLowerCase(httpHeaders.at("connection")).find("upgrade") != string::npos && httpHeaders.count("upgrade") && Common::toLowerCase(httpHeaders.at("upgrade")) == "websocket" && httpHeaders.count("sec-websocket-key")) {
 			
 				// Initialize cookies
 				unordered_map<string, string> cookies;
@@ -2755,7 +2755,7 @@ int main(int argc, char *argv[]) {
 		const unordered_map<string, unordered_set<string>> *urls = get<2>(*torServerRequestCallbackArgument);
 		
 		// Check if setting request's CORS headers failed
-		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "Content-Type, Authorization")) {
+		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "Content-Type")) {
 		
 			// Reply with internal server error to request
 			evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -3848,8 +3848,8 @@ int main(int argc, char *argv[]) {
 	// Otherwise
 	else {
 	
-		// Initialize error occured
-		bool errorOccured = false;
+		// Initialize error occurred
+		bool errorOccurred = false;
 	
 		// Check if Tor thread is joinable
 		if(torThread.joinable()) {
@@ -3867,8 +3867,8 @@ int main(int argc, char *argv[]) {
 				// Display message
 				cout << "Joining Tor thread failed" << endl;
 			
-				// Set error occured
-				errorOccured = true;
+				// Set error occurred
+				errorOccurred = true;
 				
 				// Remove temporary directory
 				filesystem::remove_all(temporaryDirectory);
@@ -3879,9 +3879,9 @@ int main(int argc, char *argv[]) {
 		}
 		
 		// Check if an error didn't occur
-		if(!errorOccured) {
+		if(!errorOccurred) {
 		
-			// Check if a thread error occured
+			// Check if a thread error occurred
 			if(threadError.load()) {
 			
 				// Remove temporary directory
