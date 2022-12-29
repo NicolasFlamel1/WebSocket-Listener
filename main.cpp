@@ -1470,7 +1470,7 @@ int main(int argc, char *argv[]) {
 																			for(size_t i = 0; i < sizeof(uint16_t); ++i) {
 																			
 																				// Include length byte in real length
-																				realLength |= data[WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint16_t) - sizeof(uint8_t) * i] << (Common::BITS_IN_A_BYTE * i);
+																				realLength |= static_cast<uint64_t>(data[WEBSOCKET_LENGTH_BYTE_OFFSET + sizeof(uint16_t) - sizeof(uint8_t) * i]) << (Common::BITS_IN_A_BYTE * i);
 																			}
 																			
 																			// Set mask offsets

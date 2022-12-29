@@ -1,6 +1,7 @@
 // Header files
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include "common.h"
 #include "openssl/sha.h"
 #include "zlib.h"
