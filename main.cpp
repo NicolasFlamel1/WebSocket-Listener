@@ -145,7 +145,7 @@ static const char COOKIE_SEPARATOR = ';';
 static const char COOKIE_KEY_VALUE_SEPARATOR = '=';
 
 // Session ID cookie name
-static const char *SESSION_ID_COOKIE_NAME = "__Host-Listener_ID";
+static const char *SESSION_ID_COOKIE_NAME = "Listener_ID";
 
 // Session ID minimum length
 static const size_t SESSION_ID_MINIMUM_LENGTH = 40;
@@ -1064,7 +1064,7 @@ int main(int argc, char *argv[]) {
 				}
 				
 				// Check if setting HTTP headers to finalize WebSocket handshake failed
-				if(evhttp_add_header(evhttp_request_get_output_headers(request), "Upgrade", "websocket") || evhttp_add_header(evhttp_request_get_output_headers(request), "Connection", "Upgrade") || evhttp_add_header(evhttp_request_get_output_headers(request), "Sec-WebSocket-Accept", responseKey.c_str()) || evhttp_add_header(evhttp_request_get_output_headers(request), "Set-Cookie", (string(SESSION_ID_COOKIE_NAME) + '=' + sessionId + "; Max-Age=" + to_string(SESSION_ID_COOKIE_MAXIMUM_AGE_SECONDS) + "; HttpOnly; Secure; SameSite=None; Priority=High; Path=/; Partitioned").c_str()) || (supportsCompression && evhttp_add_header(evhttp_request_get_output_headers(request), "Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover; client_no_context_takeover"))) {
+				if(evhttp_add_header(evhttp_request_get_output_headers(request), "Upgrade", "websocket") || evhttp_add_header(evhttp_request_get_output_headers(request), "Connection", "Upgrade") || evhttp_add_header(evhttp_request_get_output_headers(request), "Sec-WebSocket-Accept", responseKey.c_str()) || evhttp_add_header(evhttp_request_get_output_headers(request), "Set-Cookie", (string(SESSION_ID_COOKIE_NAME) + '=' + sessionId + "; Max-Age=" + to_string(SESSION_ID_COOKIE_MAXIMUM_AGE_SECONDS) + "; HttpOnly; Secure; SameSite=None; Priority=High; Path=/").c_str()) || (supportsCompression && evhttp_add_header(evhttp_request_get_output_headers(request), "Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover; client_no_context_takeover"))) {
 				
 					// Reply with internal server error to request
 					evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
