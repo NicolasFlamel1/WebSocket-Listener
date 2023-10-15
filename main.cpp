@@ -75,6 +75,9 @@ static const char *DEFAULT_LISTEN_ADDRESS = "localhost";
 // Default listen port
 static const uint16_t DEFAULT_LISTEN_PORT = 9061;
 
+// Minimum TLS version
+static const int MINIMUM_TLS_VERSION = TLS1_VERSION;
+
 // WebSocket magic key value
 static const char *WEBSOCKET_MAGIC_KEY_VALUE = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -397,6 +400,9 @@ class Client final {
 
 // Function prototypes
 
+// Display options help
+static void displayOptionsHelp();
+
 // Create WebSocket response
 static const vector<uint8_t> createWebSocketResponse(const string &message, WebSocketOpcode opcode, bool supportsCompression);
 
@@ -468,8 +474,28 @@ int main(int argc, char *argv[]) {
 			// Address
 			case 'a':
 			
-				// Set listen address
-				listenAddress = optarg;
+				// Check if option exists
+				if(optarg) {
+				
+					// Set listen address
+					listenAddress = optarg;
+				}
+				
+				// Otherwise
+				else {
+				
+					// Display message
+					cout << argv[0] << ": invalid address -- ''" << endl;
+					
+					// Display message
+					cout << endl << "Usage:" << endl << '\t' << argv[0] << " [options]" << endl << endl;
+					
+					// Display options help
+					displayOptionsHelp();
+					
+					// Return failure
+					return EXIT_FAILURE;
+				}
 				
 				// Break
 				break;
@@ -477,8 +503,28 @@ int main(int argc, char *argv[]) {
 			// Certificate
 			case 'c':
 			
-				// Set certificate
-				certificate = optarg;
+				// Check if option exists
+				if(optarg) {
+				
+					// Set certificate
+					certificate = optarg;
+				}
+				
+				// Otherwise
+				else {
+				
+					// Display message
+					cout << argv[0] << ": invalid certificate -- ''" << endl;
+					
+					// Display message
+					cout << endl << "Usage:" << endl << '\t' << argv[0] << " [options]" << endl << endl;
+					
+					// Display options help
+					displayOptionsHelp();
+					
+					// Return failure
+					return EXIT_FAILURE;
+				}
 			
 				// Break
 				break;
@@ -486,8 +532,28 @@ int main(int argc, char *argv[]) {
 			// Key
 			case 'k':
 			
-				// Set key
-				key = optarg;
+				// Check if option exists
+				if(optarg) {
+				
+					// Set key
+					key = optarg;
+				}
+				
+				// Otherwise
+				else {
+				
+					// Display message
+					cout << argv[0] << ": invalid key -- ''" << endl;
+					
+					// Display message
+					cout << endl << "Usage:" << endl << '\t' << argv[0] << " [options]" << endl << endl;
+					
+					// Display options help
+					displayOptionsHelp();
+					
+					// Return failure
+					return EXIT_FAILURE;
+				}
 			
 				// Break
 				break;
@@ -495,7 +561,9 @@ int main(int argc, char *argv[]) {
 			// Port
 			case 'p':
 			
-				{
+				// Check if option exists
+				if(optarg) {
+				
 					// Get port
 					string port = optarg;
 					
@@ -534,27 +602,35 @@ int main(int argc, char *argv[]) {
 							}
 						}
 					}
-					
-					// Display message
-					cout << "Invalid port: " << port << endl;
 				}
+				
+				// Display message
+				cout << argv[0] << ": invalid port -- '" << (optarg ? optarg : "") << '\'' << endl;
+				
+				// Display message
+				cout << endl << "Usage:" << endl << '\t' << argv[0] << " [options]" << endl << endl;
+				
+				// Display options help
+				displayOptionsHelp();
+				
+				// Return failure
+				return EXIT_FAILURE;
+				
+				// Break
+				break;
 			
 			// Help or default
 			case 'h':
 			default:
 			
 				// Display message
-				cout << endl << "Usage:" << endl << "\t\"" << argv[0] << "\" [options]" << endl << endl;
-				cout << "Options:" << endl;
-				cout << "\t-v, --version\t\tDisplays version information" << endl;
-				cout << "\t-a, --address\t\tSets address to listen on" << endl;
-				cout << "\t-p, --port\t\tSets port to listen on" << endl;
-				cout << "\t-c, --cert\t\tSets the TLS certificate file" << endl;
-				cout << "\t-k, --key\t\tSets the TLS private key file" << endl;
-				cout << "\t-h, --help\t\tDisplays help information" << endl;
+				cout << endl << "Usage:" << endl << '\t' << argv[0] << " [options]" << endl << endl;
+				
+				// Display options help
+				displayOptionsHelp();
 			
-				// Return failure
-				return EXIT_FAILURE;
+				// Return success
+				return EXIT_SUCCESS;
 		}
 	}
 	
@@ -564,16 +640,6 @@ int main(int argc, char *argv[]) {
 		// Display message
 		cout << ((certificate && !key) ? "No key provided for the certificate" : "No certificate provided for the key") << endl;
 		
-		// Display message
-		cout << endl << "Usage:" << endl << "\t\"" << argv[0] << "\" [options]" << endl << endl;
-		cout << "Options:" << endl;
-		cout << "\t-v, --version\t\tDisplays version information" << endl;
-		cout << "\t-a, --address\t\tSets address to listen on" << endl;
-		cout << "\t-p, --port\t\tSets port to listen on" << endl;
-		cout << "\t-c, --cert\t\tSets the TLS certificate file" << endl;
-		cout << "\t-k, --key\t\tSets the TLS private key file" << endl;
-		cout << "\t-h, --help\t\tDisplays help information" << endl;
-	
 		// Return failure
 		return EXIT_FAILURE;
 	}
@@ -669,6 +735,13 @@ int main(int argc, char *argv[]) {
 		return EXIT_FAILURE;
 	}
 	
+	// Check if setting TLS context's minimum TLS version failed
+	if(!SSL_CTX_set_min_proto_version(tlsContext.get(), MINIMUM_TLS_VERSION)) {
+	
+		// Throw exception
+		throw runtime_error("Setting the TLS context's minimum protocol version failed");
+	}
+	
 	// Check if using TLS server
 	if(usingTlsServer) {
 	
@@ -742,6 +815,13 @@ int main(int argc, char *argv[]) {
 			// Release TLS connection
 			tlsConnection.release();
 			
+			// Check if allow dirty shutdown for the TLS buffer failed
+			if(bufferevent_ssl_set_flags(tlsBuffer.get(), BUFFEREVENT_SSL_DIRTY_SHUTDOWN) == EV_UINT64_MAX) {
+			
+				// Return null
+				return nullptr;
+			}
+			
 			// Get buffer event
 			bufferevent *bufferEvent = tlsBuffer.get();
 			
@@ -752,6 +832,36 @@ int main(int argc, char *argv[]) {
 			return bufferEvent;
 			
 		}), tlsContext.get());
+		
+		// Set HTTP server new request callback
+		evhttp_set_newreqcb(httpServer.get(), [](evhttp_request *request, void *argument) -> int {
+		
+			// Check if request's connection exists
+			evhttp_connection *requestsConnection = evhttp_request_get_connection(request);
+			if(requestsConnection) {
+		
+				// Set request's connection close callback
+				evhttp_connection_set_closecb(requestsConnection, [](evhttp_connection *connection, void *argument) {
+					
+					// Check if connection's buffer event exists
+					bufferevent *bufferEvent = evhttp_connection_get_bufferevent(connection);
+					if(bufferEvent) {
+
+						// Check if buffer event's TLS connection exists
+						SSL *tlsConnection = bufferevent_openssl_get_ssl(bufferEvent);
+						if(tlsConnection) {
+						
+							// Shutdown TLS connection
+							SSL_shutdown(tlsConnection);
+						}
+					}
+				}, nullptr);
+			}
+			
+			// Return success
+			return 0;
+			
+		}, nullptr);
 	}
 	
 	// Initialize Onion Service address
@@ -854,50 +964,25 @@ int main(int argc, char *argv[]) {
 	unordered_map<string, unordered_set<string>> urls;
 	
 	// Initialize HTTP server request callback argument
-	tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> httpServerRequestCallbackArgument(&usingTlsServer, &onionServiceAddress, &clients, &urls);
+	tuple<const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> httpServerRequestCallbackArgument(&onionServiceAddress, &clients, &urls);
 	
 	// Set HTTP server WebSocket request callback
 	evhttp_set_cb(httpServer.get(), "/", ([](evhttp_request *request, void *argument) {
 	
 		// Get HTTP server request callback argument from argument
-		tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *httpServerRequestCallbackArgument = reinterpret_cast<tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *>(argument);
-		
-		// Get using TLS server from HTTP server request callback argument
-		const bool *usingTlsServer = get<0>(*httpServerRequestCallbackArgument);
+		tuple<const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *httpServerRequestCallbackArgument = reinterpret_cast<tuple<const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *>(argument);
 		
 		// Get Onion Service address from HTTP server request callback argument
-		const string *onionServiceAddress = get<1>(*httpServerRequestCallbackArgument);
+		const string *onionServiceAddress = get<0>(*httpServerRequestCallbackArgument);
 		
 		// Get clients from HTTP server request callback argument
-		unordered_map<evhttp_connection *, Client> *clients = get<2>(*httpServerRequestCallbackArgument);
+		unordered_map<evhttp_connection *, Client> *clients = get<1>(*httpServerRequestCallbackArgument);
 		
 		// Get URLs from HTTP server request callback argument
-		unordered_map<string, unordered_set<string>> *urls = get<3>(*httpServerRequestCallbackArgument);
+		unordered_map<string, unordered_set<string>> *urls = get<2>(*httpServerRequestCallbackArgument);
 		
-		// Check if using TLS server
-		if(*usingTlsServer) {
-		
-			// Set request's connection close callback
-			evhttp_connection_set_closecb(evhttp_request_get_connection(request), ([](evhttp_connection *connection, void *argument) {
-			
-				// Check if request's buffer event exists
-				bufferevent *bufferEvent = evhttp_connection_get_bufferevent(connection);
-				if(bufferEvent) {
-			
-					// Check if request's TLS connection exists
-					SSL *requestTlsConnection = bufferevent_openssl_get_ssl(bufferEvent);
-					if(requestTlsConnection) {
-					
-						// Shutdown request's TLS connection
-						SSL_shutdown(requestTlsConnection);
-					}
-				}
-				
-			}), nullptr);
-		}
-		
-		// Check if setting request's CORS headers failed
-		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*")) {
+		// Check if setting request's cache control header or CORS header failed
+		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Cache-Control", "no-store, no-transform") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*")) {
 		
 			// Reply with internal server error to request
 			evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -913,8 +998,8 @@ int main(int argc, char *argv[]) {
 		// Otherwise check if OPTIONS request
 		else if(evhttp_request_get_command(request) == EVHTTP_REQ_OPTIONS) {
 		
-			// Check if setting CORS header failed
-			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "GET, OPTIONS")) {
+			// Check if setting CORS headers failed
+			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "GET, OPTIONS") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*")) {
 			
 				// Reply with internal server error to request
 				evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -2647,36 +2732,8 @@ int main(int argc, char *argv[]) {
 	// Set HTTP server request callback
 	evhttp_set_gencb(httpServer.get(), ([](evhttp_request *request, void *argument) {
 	
-		// Get HTTP server request callback argument from argument
-		tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *httpServerRequestCallbackArgument = reinterpret_cast<tuple<const bool *, const string *, unordered_map<evhttp_connection *, Client> *, unordered_map<string, unordered_set<string>> *> *>(argument);
-		
-		// Get using TLS server from HTTP server request callback argument
-		const bool *usingTlsServer = get<0>(*httpServerRequestCallbackArgument);
-		
-		// Check if using TLS server
-		if(*usingTlsServer) {
-		
-			// Set request's connection close callback
-			evhttp_connection_set_closecb(evhttp_request_get_connection(request), ([](evhttp_connection *connection, void *argument) {
-			
-				// Check if request's buffer event exists
-				bufferevent *bufferEvent = evhttp_connection_get_bufferevent(connection);
-				if(bufferEvent) {
-			
-					// Check if request's TLS connection exists
-					SSL *requestTlsConnection = bufferevent_openssl_get_ssl(bufferEvent);
-					if(requestTlsConnection) {
-					
-						// Shutdown request's TLS connection
-						SSL_shutdown(requestTlsConnection);
-					}
-				}
-				
-			}), nullptr);
-		}
-	
-		// Check if setting request's CORS headers failed
-		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*")) {
+		// Check if setting request's cache control header or CORS header failed
+		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Cache-Control", "no-store, no-transform") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*")) {
 		
 			// Reply with internal server error to request
 			evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -2692,8 +2749,8 @@ int main(int argc, char *argv[]) {
 		// Otherwise check if OPTIONS request
 		else if(evhttp_request_get_command(request) == EVHTTP_REQ_OPTIONS) {
 		
-			// Check if setting CORS header failed
-			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "GET, OPTIONS")) {
+			// Check if setting CORS headers failed
+			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "GET, OPTIONS") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*")) {
 			
 				// Reply with internal server error to request
 				evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -2714,7 +2771,7 @@ int main(int argc, char *argv[]) {
 			evhttp_send_reply(request, HTTP_NOTFOUND, nullptr, nullptr);
 		}
 		
-	}), &httpServerRequestCallbackArgument);
+	}), nullptr);
 	
 	// Check if creating Tor server failed
 	unique_ptr<evhttp, decltype(&evhttp_free)> torServer(evhttp_new(eventBase.get()), evhttp_free);
@@ -2754,8 +2811,8 @@ int main(int argc, char *argv[]) {
 		// Get URLs from Tor server request callback argument
 		const unordered_map<string, unordered_set<string>> *urls = get<2>(*torServerRequestCallbackArgument);
 		
-		// Check if setting request's CORS headers failed
-		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "Content-Type")) {
+		// Check if setting request's cache control header or CORS header failed
+		if(evhttp_add_header(evhttp_request_get_output_headers(request), "Cache-Control", "no-store, no-transform") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Origin", "*")) {
 		
 			// Reply with internal server error to request
 			evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -2771,8 +2828,8 @@ int main(int argc, char *argv[]) {
 		// Otherwise check if OPTIONS request
 		else if(evhttp_request_get_command(request) == EVHTTP_REQ_OPTIONS) {
 		
-			// Check if setting CORS header failed
-			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "POST, OPTIONS")) {
+			// Check if setting CORS headers failed
+			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "POST, OPTIONS") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "Content-Type, Accept-Encoding")) {
 			
 				// Reply with internal server error to request
 				evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -3909,6 +3966,19 @@ int main(int argc, char *argv[]) {
 
 
 // Supporting function implementation
+
+// Display options help
+void displayOptionsHelp() {
+
+	// Display message
+	cout << "Options:" << endl;
+	cout << "\t-v, --version\t\tDisplays version information" << endl;
+	cout << "\t-a, --address\t\tSets address to listen on (default: " << DEFAULT_LISTEN_ADDRESS << ')' << endl;
+	cout << "\t-p, --port\t\tSets port to listen on (default: " << DEFAULT_LISTEN_PORT << ')' << endl;
+	cout << "\t-c, --cert\t\tSets the TLS certificate file" << endl;
+	cout << "\t-k, --key\t\tSets the TLS private key file" << endl;
+	cout << "\t-h, --help\t\tDisplays help information" << endl;
+}
 
 // Create WebSocket response
 const vector<uint8_t> createWebSocketResponse(const string &message, WebSocketOpcode opcode, bool supportsCompression) {
