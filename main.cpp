@@ -738,8 +738,11 @@ int main(int argc, char *argv[]) {
 	// Check if setting TLS context's minimum TLS version failed
 	if(!SSL_CTX_set_min_proto_version(tlsContext.get(), MINIMUM_TLS_VERSION)) {
 	
-		// Throw exception
-		throw runtime_error("Setting the TLS context's minimum protocol version failed");
+		// Display message
+		cout << "Setting TLS context's minimum protocol version failed" << endl;
+	
+		// Return failure
+		return EXIT_FAILURE;
 	}
 	
 	// Check if using TLS server
