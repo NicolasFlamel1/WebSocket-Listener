@@ -1002,7 +1002,7 @@ int main(int argc, char *argv[]) {
 		else if(evhttp_request_get_command(request) == EVHTTP_REQ_OPTIONS) {
 		
 			// Check if setting CORS headers failed
-			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "GET, OPTIONS") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*")) {
+			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "GET, OPTIONS") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Private-Network", "true")) {
 			
 				// Reply with internal server error to request
 				evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
@@ -2753,7 +2753,7 @@ int main(int argc, char *argv[]) {
 		else if(evhttp_request_get_command(request) == EVHTTP_REQ_OPTIONS) {
 		
 			// Check if setting CORS headers failed
-			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "GET, OPTIONS") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*")) {
+			if(evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Methods", "GET, OPTIONS") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Headers", "*") || evhttp_add_header(evhttp_request_get_output_headers(request), "Access-Control-Allow-Private-Network", "true")) {
 			
 				// Reply with internal server error to request
 				evhttp_send_reply(request, HTTP_INTERNAL, nullptr, nullptr);
